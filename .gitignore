@@ -1,5 +1,5 @@
 bin/
-dist/
+/dist/
 *.test
 *.out
 coverage.*
@@ -10,7 +10,6 @@ config.yaml
 .vscode/
 web/node_modules/
 web/dist/
-dist/
 hack/.env
 .dev/
 # Copied from web/dist by `make web` / the Docker build; .gitkeep keeps the

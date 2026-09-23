@@ -1,0 +1,366 @@
+package worker
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/devtron-labs/devtron-sre-agent/internal/agents"
+	"github.com/devtron-labs/devtron-sre-agent/internal/capability"
+	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
+	"github.com/devtron-labs/devtron-sre-agent/internal/knowledge"
+	"github.com/devtron-labs/devtron-sre-agent/internal/monitoring"
+	"github.com/devtron-labs/devtron-sre-agent/internal/runs"
+	"github.com/devtron-labs/devtron-sre-agent/internal/tools"
+)
+
+// Worker runs investigations. It lives in the same process as the API, so
+// there is no queue table and no lease: a submitted run goes onto a channel
+// and a pool goroutine picks it up. A restart loses in-flight runs, which
+// Store.Reclaim turns into an honest terminal state rather than a run that
+// appears to hang forever.
+type Worker struct {
+	Runs       *runs.Service
+	Devtron    *devtron.Client
+	Discoverer *devtron.Discoverer
+	Knowledge  *knowledge.Catalog
+	Caps       *capability.Service
+	Registry   *tools.Registry
+	Pipeline   *agents.Pipeline
+	Redact     func(string) string
+	Log        *slog.Logger
+
+	Concurrency         int
+	IntelligenceTimeout time.Duration
+	RunTimeout          time.Duration
+
+	queue   chan string
+	cancels sync.Map // runID -> context.CancelFunc
+	started sync.Once
+	wg      sync.WaitGroup
+}
+
+// Start launches the pool. It returns immediately; Stop waits for drain.
+func (w *Worker) Start(ctx context.Context) {
+	w.started.Do(func() {
+		if w.Concurrency < 1 {
+			w.Concurrency = 1
+		}
+		w.queue = make(chan string, 256)
+		for i := 0; i < w.Concurrency; i++ {
+			w.wg.Add(1)
+			go func() {
+				defer w.wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case id, ok := <-w.queue:
+						if !ok {
+							return
+						}
+						w.execute(ctx, id)
+					}
+				}
+			}()
+		}
+	})
+}
+
+// Stop drains the pool.
+func (w *Worker) Stop() {
+	if w.queue != nil {
+		close(w.queue)
+	}
+	w.wg.Wait()
+}
+
+// Submit queues a run. It never blocks the caller: a full queue fails the run
+// immediately rather than stalling the HTTP handler that created it.
+func (w *Worker) Submit(ctx context.Context, runID string) {
+	select {
+	case w.queue <- runID:
+	default:
+		w.Log.Error("run queue is full", "run", runID)
+		_ = w.Runs.Finish(ctx, runID, runs.StatusFailed,
+			"the agent is at capacity; try again shortly", runs.Usage{})
+	}
+}
+
+// Cancel stops an in-flight run.
+func (w *Worker) Cancel(runID string) bool {
+	if v, ok := w.cancels.Load(runID); ok {
+		v.(context.CancelFunc)()
+		return true
+	}
+	return false
+}
+
+func (w *Worker) execute(parent context.Context, runID string) {
+	timeout := w.RunTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	w.cancels.Store(runID, context.CancelFunc(cancel))
+	defer w.cancels.Delete(runID)
+
+	log := w.Log.With("run", runID)
+	ledger := w.Runs.Ledger(runID)
+
+	run, err := w.Runs.Store.Get(ctx, runID)
+	if err != nil {
+		log.Error("cannot load run", "err", err)
+		return
+	}
+	if err := w.Runs.Store.Start(ctx, runID); err != nil {
+		log.Error("cannot start run", "err", err)
+		return
+	}
+	_, _ = ledger(ctx, runs.EvStatus, "", map[string]any{"status": runs.StatusRunning})
+
+	usage := runs.Usage{}
+	fail := func(msg string, err error) {
+		log.Error(msg, "err", err)
+		_, _ = ledger(context.WithoutCancel(ctx), runs.EvError, "", map[string]any{"error": msg + ": " + errText(err)})
+		_ = w.Runs.Finish(context.WithoutCancel(ctx), runID, runs.StatusFailed, msg+": "+errText(err), usage)
+	}
+
+	// 0. Refuse early if the cluster cannot answer. Without this the run
+	//    spends its Devtron call and both agents discovering the same thing
+	//    slowly, and concludes nothing anyone can act on.
+	if w.Caps != nil {
+		if c := w.Caps.Get(run.Scope.ClusterID); c != nil && !c.Reach.Investigable() {
+			msg := "cluster " + run.Scope.ClusterName + " cannot be read: " + c.Reach.Why()
+			_, _ = ledger(ctx, runs.EvError, "preflight", map[string]any{
+				"error": msg, "reach": c.Reach, "detail": c.Detail,
+			})
+			_ = w.Runs.Finish(ctx, runID, runs.StatusFailed, msg, usage)
+			log.Warn("refused run on unreachable cluster", "cluster", run.Scope.ClusterName, "reach", c.Reach)
+			return
+		}
+	}
+
+	// 1. Discover what this cluster actually runs for metrics and alerts.
+	stack, err := w.Discoverer.Get(ctx, run.Scope.ClusterID, run.Scope.ClusterName)
+	if err != nil {
+		fail("monitoring discovery failed", err)
+		return
+	}
+	_, _ = ledger(ctx, runs.EvStatus, "preflight", map[string]any{"monitoring": stack.Summary(), "notes": stack.Notes})
+
+	mon := monitoring.New(w.Devtron, run.Scope.ClusterID, stack)
+	deps := &tools.Deps{
+		Devtron:    w.Devtron,
+		Monitoring: mon,
+		Knowledge:  w.Knowledge,
+		Cluster: tools.ClusterInfo{
+			ID: run.Scope.ClusterID, Name: run.Scope.ClusterName,
+			EnvID: run.Scope.EnvironmentID, Namespace: run.Scope.Namespace,
+			AppName: run.Scope.AppName,
+		},
+		Log:    log,
+		Cache:  tools.NewCache(10 * time.Minute),
+		Redact: w.Redact,
+	}
+
+	var alert *monitoring.Alert
+	if len(run.Trigger.Alert) > 0 {
+		var a monitoring.Alert
+		if err := json.Unmarshal(run.Trigger.Alert, &a); err == nil && a.Name != "" {
+			alert = &a
+		}
+	}
+
+	// 2. Deterministic facts, before any model call.
+	facts := w.collectFacts(ctx, run, deps, alert, ledger)
+
+	// 3. Devtron's own first pass. A failure here is survivable: the agents
+	//    still have the fact pack, and the report says the first pass errored.
+	intel := w.runIntelligence(ctx, run, alert, ledger, log)
+	if err := w.Runs.Store.SetIntelligence(ctx, runID, intel); err != nil {
+		log.Warn("could not store intelligence", "err", err)
+	}
+
+	// 4. The two agents.
+	out, err := w.Pipeline.Run(ctx, agents.Input{
+		Depth:        string(run.Options.Depth),
+		RunID:        runID,
+		UserID:       run.Scope.ClusterName,
+		Alert:        rawOrNil(run.Trigger.Alert),
+		Scope:        run.Scope,
+		Facts:        facts,
+		Intelligence: intelligenceText(intel),
+	}, deps, agents.LedgerFunc(ledger))
+	usage = out.Usage
+
+	if out.Verdict != nil {
+		if err := w.Runs.Store.SetVerdict(ctx, runID, out.Verdict); err != nil {
+			log.Warn("could not store verdict", "err", err)
+		}
+	}
+	if out.Report != nil {
+		if err := w.Runs.Store.SetReport(ctx, runID, out.Report); err != nil {
+			log.Warn("could not store report", "err", err)
+		}
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			_ = w.Runs.Finish(context.WithoutCancel(ctx), runID, runs.StatusCanceled, "the run was canceled", usage)
+			return
+		}
+		fail("the investigation failed", err)
+		return
+	}
+
+	msg := ""
+	if out.Status == runs.StatusBudgetExceeded {
+		msg = "the run stopped at its budget; the report may be incomplete"
+	}
+	if out.Status == runs.StatusFailed && out.Report == nil {
+		msg = "the agents produced no usable report"
+	}
+	if err := w.Runs.Finish(ctx, runID, out.Status, msg, usage); err != nil {
+		log.Error("could not finish run", "err", err)
+	}
+	log.Info("run finished", "status", out.Status, "toolCalls", usage.ToolCalls, "tokens", usage.ModelTokens)
+}
+
+// runIntelligence streams Devtron's one-shot debugger into the ledger so the
+// UI shows progress while it thinks, which can take a minute or more.
+func (w *Worker) runIntelligence(ctx context.Context, run *runs.Run, alert *monitoring.Alert, ledger runs.LedgerFunc, log *slog.Logger) *runs.Intelligence {
+	timeout := w.IntelligenceTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ictx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ask := askFor(run, alert)
+	_, _ = ledger(ctx, runs.EvIntelligenceStart, "intelligence", map[string]any{"ask": ask})
+
+	res, err := w.Devtron.Intelligence(ictx, devtron.IntelligenceRequest{
+		Ask:     ask,
+		Context: intelligenceContext(run, alert),
+	}, func(ev devtron.IntelligenceEvent) {
+		if ev.Type == devtron.EventThinking && ev.Content != "" {
+			_, _ = ledger(ctx, runs.EvIntelligenceThinking, "intelligence", map[string]any{"content": ev.Content})
+		}
+	})
+
+	out := &runs.Intelligence{}
+	if res != nil {
+		out.RequestID = res.RequestID
+		out.Analysis = res.Analysis
+		out.ThinkingCount = len(res.Thinking)
+		out.Thinking = keepThinking(res.Thinking)
+		out.DurationMs = res.Duration.Milliseconds()
+		out.Failed = res.Failed
+	}
+	if err != nil {
+		if out.Failed == "" {
+			out.Failed = errText(err)
+		}
+		log.Warn("devtron intelligence did not answer", "err", err, "requestId", out.RequestID)
+	}
+	_, _ = ledger(ctx, runs.EvIntelligenceAnalysis, "intelligence", map[string]any{
+		"requestId": out.RequestID, "analysis": out.Analysis,
+		"failed": out.Failed, "durationMs": out.DurationMs, "thinkingCount": out.ThinkingCount,
+	})
+	return out
+}
+
+// keepThinking trims the narrated steps to what is worth carrying.
+//
+// The first steps are where Devtron says what it is about to inspect, which
+// is the part our agents can act on; the tail is mostly narration of a
+// conclusion already reached. Each line is clipped too, because a step that
+// has quoted a whole manifest into itself is not a step any more.
+func keepThinking(steps []string) []string {
+	const maxLine = 240
+	out := make([]string, 0, runs.ThinkingKept)
+	seen := make(map[string]bool, runs.ThinkingKept)
+	for _, s := range steps {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		// Clipped by rune, not by byte: a step in Japanese or one carrying an
+		// emoji would otherwise be cut mid-character and reach the model as
+		// invalid UTF-8.
+		if r := []rune(s); len(r) > maxLine {
+			s = string(r[:maxLine]) + "…"
+		}
+		out = append(out, s)
+		if len(out) == runs.ThinkingKept {
+			break
+		}
+	}
+	return out
+}
+
+// intelligenceText is what the agents actually read. When the first pass
+// failed, say so in the text: a blank section would read as "it found
+// nothing", which is a different and much weaker claim.
+//
+// The narrated steps are appended under the analysis. They are the cheapest
+// evidence in the run — Devtron already paid to gather them — and handing
+// them over is what stops our agents re-reading the same objects.
+func intelligenceText(in *runs.Intelligence) string {
+	if in == nil {
+		return "(Devtron Intelligence was not called for this run.)"
+	}
+	body := in.Analysis
+	if body == "" {
+		if in.Failed != "" {
+			body = "(Devtron Intelligence returned no analysis. It failed with: " + in.Failed +
+				"\nThere is no first-pass analysis to verify. Work from the deterministic facts alone and say so in your output.)"
+		} else {
+			body = "(Devtron Intelligence returned an empty analysis.)"
+		}
+	}
+	if len(in.Thinking) == 0 {
+		return body
+	}
+	var b strings.Builder
+	b.WriteString(body)
+	b.WriteString("\n\n### Steps Devtron took (")
+	b.WriteString(strconv.Itoa(in.ThinkingCount))
+	b.WriteString(" in total, first ")
+	b.WriteString(strconv.Itoa(len(in.Thinking)))
+	b.WriteString(" shown)\n\n")
+	b.WriteString("These are what the first pass actually inspected, in order. Treat them as evidence " +
+		"of what has already been looked at — cite them as `devtron_step` — and do not spend a tool " +
+		"call repeating one unless you have reason to think it got the wrong answer.\n")
+	for i, s := range in.Thinking {
+		b.WriteString("\n")
+		b.WriteString(strconv.Itoa(i + 1))
+		b.WriteString(". ")
+		b.WriteString(s)
+	}
+	return b.String()
+}
+
+func rawOrNil(b json.RawMessage) any {
+	if len(b) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return nil
+	}
+	return v
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}

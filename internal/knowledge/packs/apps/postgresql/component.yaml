@@ -1,0 +1,48 @@
+id: app.postgresql
+name: PostgreSQL
+class: app
+summary: Relational database. Failures are usually connections, disk or locks — rarely
+  the process itself.
+aliases:
+- postgres
+- postgresql
+- pgsql
+chartNames:
+- postgresql
+- postgresql-ha
+- postgres-operator
+- cloudnative-pg
+- percona-postgresql-operator
+labels:
+  app.kubernetes.io/name: postgresql
+images:
+- postgres
+- bitnami/postgresql
+- ghcr.io/cloudnative-pg
+metrics:
+- name: pg_up
+  type: gauge
+  means: Exporter can reach the server. 0 means the exporter is down or the DB is
+    refusing connections — distinguish the two before declaring an outage.
+- name: pg_stat_activity_count
+  type: gauge
+  labels:
+  - datname
+  - state
+  query: sum(pg_stat_activity_count) by (state)
+  means: state=idle in transaction piling up is an application bug, not database load.
+- name: pg_settings_max_connections
+  type: gauge
+- name: pg_locks_count
+  type: gauge
+  labels:
+  - datname
+  - mode
+- name: pg_replication_lag
+  type: gauge
+  means: Seconds behind primary. Growing lag under write load means the replica cannot
+    keep up; reads served from it are stale.
+- name: pg_database_size_bytes
+  type: gauge
+  labels:
+  - datname

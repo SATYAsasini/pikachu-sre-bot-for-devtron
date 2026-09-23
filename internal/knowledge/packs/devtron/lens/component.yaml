@@ -1,0 +1,35 @@
+id: devtron.lens
+name: Devtron Lens
+class: devtron
+summary: ' Deployment metrics and DORA-style analytics service. Non-critical: when
+  it fails, only charts break.'
+aliases:
+- lens
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: lens
+images:
+- devtron-labs/lens
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (lens/pkg/middleware/instrument.go)
+metrics:
+- name: lens_http_requests_total
+  type: counter
+  labels:
+  - path
+  - method
+  - status
+- name: lens_http_duration_seconds
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+- name: lens_http_requests_current
+  type: gauge
+  labels:
+  - path
+  - method

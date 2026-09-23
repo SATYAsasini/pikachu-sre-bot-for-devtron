@@ -1,0 +1,157 @@
+id: devtron.orchestrator
+name: Devtron Orchestrator
+class: devtron
+summary: The Devtron control plane API. Owns CI/CD pipelines, app and environment
+  metadata, RBAC and the Kubernetes proxy every other client goes through.
+aliases:
+- orchestrator
+- devtron-orchestrator
+- orchestrator-devtroncd
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: orchestrator
+images:
+- devtron-labs/devtron
+- devtron-labs/hyperion
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron (internal/middleware/instrument.go)
+metrics:
+- name: orchestrator_http_requests_total
+  type: counter
+  labels:
+  - path
+  - method
+  - status
+  help: How many HTTP requests processed, partitioned by status code, method and HTTP
+    path.
+  means: The primary health signal. A rising 5xx share on one path localises a fault
+    to one subsystem rather than the whole control plane.
+  query: sum(increase(orchestrator_http_requests_total{status=~"5.."}[5m])) by (path)
+- name: orchestrator_http_duration_seconds
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+  help: Duration of HTTP requests.
+  means: p99 growth on /orchestrator/app/list or the k8s proxy paths usually means
+    Postgres pressure or a slow downstream cluster, not orchestrator CPU.
+  query: histogram_quantile(0.99, sum(rate(orchestrator_http_duration_seconds_bucket[5m]))
+    by (le, path))
+- name: orchestrator_http_requests_current
+  type: gauge
+  labels:
+  - path
+  - method
+  means: In-flight requests. A climbing plateau means handlers are blocked, most often
+    on the database or a cluster that stopped answering.
+- name: cd_trigger_counter
+  type: counter
+  labels:
+  - appName
+  - envName
+  means: Deployments started. Flat while users report deploying means triggers are
+    not reaching the orchestrator.
+- name: cd_duration_seconds
+  type: histogram
+  labels:
+  - appName
+  - status
+  - envName
+  - deploymentType
+  help: Duration of CD process
+  means: The count series split by status is the deployment success rate; the duration
+    tail shows GitOps or ArgoCD sync slowness.
+  query: sum(rate(cd_duration_seconds_count{status!="Succeeded"}[15m])) by (appName,
+    envName)
+- name: ci_trigger_counter
+  type: counter
+  labels:
+  - appName
+  - pipelineName
+  means: Builds started.
+- name: ci_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+  help: Duration of CI process
+- name: pre_ci_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+- name: build_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+- name: post_ci_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+- name: cache_download_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+  means: A jump here with flat build_duration points at the artifact store (S3/blob),
+    not the build.
+- name: cache_upload_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+- name: git_ops_duration_seconds
+  type: histogram
+  labels:
+  - operationName
+  - methodName
+  - status
+  help: Duration of GitOps
+  means: Orchestrator's own git work (Pull, CommitAndPushAllChanges, ListBranch, GetCloneDirectory).
+    Failures here stall GitOps deployments before ArgoCD is ever involved.
+  query: sum(rate(git_ops_duration_seconds_count{status!="Success"}[10m])) by (operationName)
+- name: app_listing_duration_seconds
+  type: histogram
+  labels:
+  - MethodName
+  - AppType
+  means: Slow app listing is the usual first symptom of Postgres bloat or a missing
+    index.
+- name: deployment_status_cron_process_time
+  type: histogram
+  labels:
+  - cronName
+  means: If this cron stops advancing, deployment status in the UI freezes even though
+    the deployment itself succeeded.
+- name: re_trigger_failed_counter
+  type: counter
+  labels:
+  - workflowType
+  - workflowId
+  means: CI / pre-CD / post-CD workflow re-trigger failures.
+- name: initiate_terminal_session_request_counter
+  type: counter
+  labels:
+  - sessionAction
+  - isError
+- name: terminal_session_duration
+  type: histogram
+  labels:
+  - podName
+  - namespace
+  - clusterId
+- name: panic_recovery_count
+  type: counter
+  labels:
+  - panic_type
+  - host
+  - method
+  - path
+  means: A recovered panic. Non-zero is always worth reporting even when the service
+    looks healthy.

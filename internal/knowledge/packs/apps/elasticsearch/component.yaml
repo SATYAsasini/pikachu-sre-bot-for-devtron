@@ -1,0 +1,44 @@
+id: app.elasticsearch
+name: Elasticsearch / OpenSearch
+class: app
+summary: Search and log store. Cluster status colour and disk watermarks explain almost
+  every incident.
+aliases:
+- elasticsearch
+- opensearch
+- elastic
+chartNames:
+- elasticsearch
+- opensearch
+- eck-elasticsearch
+labels:
+  app.kubernetes.io/name: elasticsearch
+images:
+- elasticsearch
+- opensearchproject/opensearch
+metrics:
+- name: elasticsearch_cluster_health_status
+  type: gauge
+  labels:
+  - color
+  means: green all shards assigned; yellow replicas unassigned; red PRIMARY shards
+    unassigned, meaning data is unavailable right now.
+- name: elasticsearch_cluster_health_unassigned_shards
+  type: gauge
+- name: elasticsearch_filesystem_data_available_bytes
+  type: gauge
+  labels:
+  - node
+  means: Crossing the 85% flood watermark makes indices read-only, which looks like
+    an application write bug.
+- name: elasticsearch_jvm_memory_used_bytes
+  type: gauge
+  labels:
+  - area
+  - node
+- name: elasticsearch_thread_pool_rejected_count
+  type: counter
+  labels:
+  - type
+  - node
+  means: Rejections mean the cluster is shedding load; clients see intermittent failures.

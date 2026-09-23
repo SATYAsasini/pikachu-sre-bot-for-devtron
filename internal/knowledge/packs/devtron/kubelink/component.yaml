@@ -1,0 +1,71 @@
+id: devtron.kubelink
+name: Devtron Kubelink
+class: devtron
+aliases:
+- kubelink
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: kubelink
+images:
+- devtron-labs/kubelink
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (kubelink/internals/middleware/instrument.go)
+metrics:
+- name: kubelink_http_duration_seconds
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+  help: Duration of HTTP requests.
+- name: kubelink_http_requests_total
+  type: counter
+  labels:
+  - path
+  - method
+  - status
+- name: kubelink_http_requests_current
+  type: gauge
+  labels:
+  - path
+  - method
+- name: kubelink_informer_data_transform_duration_seconds
+  type: histogram
+  labels:
+  - clusterName
+  - namespace
+  - releaseName
+  help: Duration of informer data transform request
+  means: Kubelink's per-release informer work. Growth on one clusterName isolates
+    the problem to that cluster rather than to kubelink itself.
+  query: histogram_quantile(0.95, sum(rate(kubelink_informer_data_transform_duration_seconds_bucket[5m]))
+    by (le, clusterName))
+- name: grpc_server_handled_total
+  type: counter
+  labels:
+  - grpc_method
+  - grpc_code
+  - grpc_type
+  means: The real health signal for kubelink, because the orchestrator talks to it
+    over gRPC, not HTTP. Any grpc_code other than OK is a failed Helm operation.
+  query: sum(increase(grpc_server_handled_total{container="kubelink",grpc_code!="OK"}[1h]))
+    by (grpc_code, grpc_method)
+- name: grpc_server_handling_seconds
+  type: histogram
+  labels:
+  - grpc_method
+  - grpc_type
+  means: Helm operation latency. p99 above a few seconds usually means a slow or throttled
+    target cluster API.
+  query: histogram_quantile(0.99, sum(rate(grpc_server_handling_seconds_bucket{job=~"kubelink-.*"}[1m]))
+    by (le, grpc_method))
+- name: grpc_server_msg_received_total
+  type: counter
+  labels:
+  - grpc_method
+  - grpc_type
+summary: gRPC service that performs all Helm operations and watches release state
+  in managed clusters on the orchestrator's behalf.

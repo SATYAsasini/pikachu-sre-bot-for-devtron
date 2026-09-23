@@ -1,0 +1,33 @@
+id: devtron.dashboard
+name: Devtron Dashboard
+class: devtron
+aliases:
+- dashboard
+- devtron-dashboard
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: dashboard
+images:
+- devtron-labs/dashboard
+namespaces:
+- devtroncd
+metrics:
+- name: nginx_ingress_controller_requests
+  type: counter
+  labels:
+  - ingress
+  - status
+  - host
+  means: The dashboard's own errors surface at the ingress. 5xx here with a healthy
+    pod points at the ingress or the orchestrator behind it.
+  query: sum(increase(nginx_ingress_controller_requests{ingress=~"dashboard.*",status=~"5.."}[10m]))
+- name: kube_pod_container_status_restarts_total
+  type: counter
+  labels:
+  - container
+  - namespace
+  query: sum(kube_pod_container_status_restarts_total{container="dashboard"})
+summary: The Devtron web UI. A static React app behind nginx — when "Devtron is down"
+  it is usually not this.

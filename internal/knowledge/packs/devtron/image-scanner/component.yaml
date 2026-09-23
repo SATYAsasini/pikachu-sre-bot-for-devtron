@@ -1,0 +1,45 @@
+id: devtron.image-scanner
+name: Devtron Image Scanner
+class: devtron
+aliases:
+- image-scanner
+- imagescanner
+- image-scanner-new
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: image-scanner
+images:
+- devtron-labs/image-scanner
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (image-scanner/pkg/middleware/instrument.go)
+metrics:
+- name: image_scanner_http_requests_total
+  type: counter
+  labels:
+  - path
+  - method
+  - status
+- name: image_scanner_http_duration_seconds
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+  means: Scan latency. Large images and a cold vulnerability database both show up
+    here.
+- name: image_scanner_http_requests_current
+  type: gauge
+  labels:
+  - path
+  - method
+- name: image_scanner_http_status_code
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+summary: Scans built images for vulnerabilities. Failures block CI completion even
+  though the build itself succeeded.

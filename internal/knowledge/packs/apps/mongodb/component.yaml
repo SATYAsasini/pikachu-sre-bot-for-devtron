@@ -1,0 +1,43 @@
+id: app.mongodb
+name: MongoDB
+class: app
+summary: Document database. Connections, replica-set health and working-set memory
+  dominate its failures.
+aliases:
+- mongodb
+- mongo
+chartNames:
+- mongodb
+- mongodb-replicaset
+- community-operator
+- percona-server-mongodb
+labels:
+  app.kubernetes.io/name: mongodb
+images:
+- mongo
+- bitnami/mongodb
+- percona/percona-server-mongodb
+metrics:
+- name: mongodb_up
+  type: gauge
+- name: mongodb_connections
+  type: gauge
+  labels:
+  - state
+  means: current vs available. Exhaustion looks like a total outage to every client
+    at once.
+- name: mongodb_mongod_replset_member_health
+  type: gauge
+  labels:
+  - name
+  - state
+  means: 0 for any member means the replica set is degraded; a lost majority makes
+    it read-only.
+- name: mongodb_mongod_replset_member_replication_lag
+  type: gauge
+- name: mongodb_mongod_metrics_cursor_timed_out_total
+  type: counter
+- name: mongodb_mongod_wiredtiger_cache_bytes
+  type: gauge
+  means: Working set larger than cache means constant disk reads and a latency cliff
+    with no error anywhere.

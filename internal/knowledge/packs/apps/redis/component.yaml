@@ -1,0 +1,47 @@
+id: app.redis
+name: Redis
+class: app
+summary: In-memory store. Nearly every Redis incident is memory, eviction or persistence.
+aliases:
+- redis
+- redis-cluster
+- redis-sentinel
+chartNames:
+- redis
+- redis-cluster
+- redis-ha
+- redis-operator
+labels:
+  app.kubernetes.io/name: redis
+images:
+- redis
+- bitnami/redis
+metrics:
+- name: redis_up
+  type: gauge
+- name: redis_memory_used_bytes
+  type: gauge
+  query: redis_memory_used_bytes / redis_memory_max_bytes
+  means: Ratio against maxmemory is the number that matters. Above ~0.9 evictions
+    begin and cache hit rate collapses.
+- name: redis_memory_max_bytes
+  type: gauge
+- name: redis_evicted_keys_total
+  type: counter
+  means: Non-zero means the working set no longer fits. Downstream services see cache
+    misses and latency, not Redis errors.
+- name: redis_rejected_connections_total
+  type: counter
+  means: maxclients reached.
+- name: redis_connected_clients
+  type: gauge
+- name: redis_keyspace_hits_total
+  type: counter
+- name: redis_keyspace_misses_total
+  type: counter
+  query: rate(redis_keyspace_misses_total[5m]) / (rate(redis_keyspace_hits_total[5m])
+    + rate(redis_keyspace_misses_total[5m]))
+- name: redis_rdb_last_bgsave_status
+  type: gauge
+  means: 0 means the last background save failed — usually disk. Persistence is silently
+    broken while Redis keeps serving.

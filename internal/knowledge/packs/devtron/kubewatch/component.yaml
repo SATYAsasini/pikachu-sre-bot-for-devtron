@@ -1,0 +1,54 @@
+id: devtron.kubewatch
+name: Devtron Kubewatch
+class: devtron
+aliases:
+- kubewatch
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: kubewatch
+images:
+- devtron-labs/kubewatch
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (kubewatch/pkg/middleware/instrument.go)
+metrics:
+- name: Kubewatch_unreachable_client_count
+  type: counter
+  labels:
+  - clusterName
+  - clusterId
+  means: Kubewatch could not build or keep a client for a managed cluster. Rising
+    on one clusterName means events from that cluster stop entirely, so its apps silently
+    freeze in the UI.
+  query: sum(increase(Kubewatch_unreachable_client_count[15m])) by (clusterName)
+- name: Kubewatch_unregistered_informer_count
+  type: counter
+  labels:
+  - clusterName
+  - clusterId
+  - informerName
+  help: How many informers are unregistered, with informer name, cluster name and
+    cluster id.
+  means: An informer stopped. Whatever resource kind it watched no longer produces
+    events, which is a partial blindness that no pod-level health check will show.
+- name: Kubewatch_non_administrative_events_count
+  type: counter
+  labels:
+  - clusterName
+  - clusterId
+  - resourceType
+  help: How many events are non-administrative (not devtron managed), with resource
+    type, cluster name and cluster id.
+  means: Volume of events for resources Devtron does not manage. A spike explains
+    NATS pressure without any Devtron app being at fault.
+- name: nats_publish_count
+  type: counter
+  labels:
+  - topic
+  - status
+  means: Kubewatch is a publisher. If this flatlines while the cluster is clearly
+    changing, kubewatch has lost either its informers or its NATS connection.
+summary: Watches managed clusters with informers and publishes workload and workflow
+  events onto NATS for the orchestrator to consume.

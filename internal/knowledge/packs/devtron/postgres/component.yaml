@@ -1,0 +1,50 @@
+id: devtron.postgres
+name: Devtron Postgres
+class: devtron
+summary: The orchestrator's own database. Devtron-wide slowness almost always terminates
+  here.
+aliases:
+- postgresql-devtron
+- devtron-postgres
+- postgresql
+- postgres
+chartNames:
+- postgresql
+- postgresql-ha
+labels:
+  app: postgresql
+images:
+- postgres
+- bitnami/postgresql
+namespaces:
+- devtroncd
+metrics:
+- name: pg_stat_activity_count
+  type: gauge
+  labels:
+  - datname
+  - state
+  means: Connection count by state. A wall of idle-in-transaction is the classic orchestrator-side
+    leak.
+  query: sum(pg_stat_activity_count) by (state)
+- name: pg_settings_max_connections
+  type: gauge
+  means: Compare against pg_stat_activity_count — exhaustion makes every Devtron service
+    fail at once.
+- name: pg_stat_database_xact_rollback
+  type: counter
+  labels:
+  - datname
+- name: pg_locks_count
+  type: gauge
+  labels:
+  - datname
+  - mode
+  means: Lock pile-ups turn a slow query into a full outage.
+- name: pg_up
+  type: gauge
+- name: pg_database_size_bytes
+  type: gauge
+  labels:
+  - datname
+  means: Growth without bound usually means the CI/CD history tables were never pruned.

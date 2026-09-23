@@ -1,0 +1,62 @@
+id: devtron.ci-workflow
+name: Devtron CI (build workflow pods)
+class: devtron
+aliases:
+- ci-runner
+- devtron-ci
+- ci workflow
+- cirunner
+- build pod
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: ci-runner
+images:
+- devtron-labs/ci-runner
+namespaces:
+- devtron-ci
+repo: github.com/devtron-labs/devtron-services (ci-runner)
+metrics:
+- name: ci_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+  help: Duration of CI process
+  means: End-to-end build time, exported by the orchestrator rather than the build
+    pod.
+- name: ci_trigger_counter
+  type: counter
+  labels:
+  - appName
+  - pipelineName
+- name: cache_download_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+  means: Slow cache download with a normal build_duration points at the blob store,
+    not the build.
+- name: build_duration_seconds
+  type: histogram
+  labels:
+  - pipelineName
+  - appName
+- name: kube_pod_container_status_running
+  type: gauge
+  labels:
+  - namespace
+  - container
+  means: Concurrent builds in flight.
+  query: sum(kube_pod_container_status_running{namespace="devtron-ci",container="main"})
+- name: kube_pod_status_phase
+  type: gauge
+  labels:
+  - namespace
+  - phase
+  means: Builds stuck Pending. This is the queue depth that matters when users say
+    CI is slow.
+  query: sum(kube_pod_status_phase{namespace="devtron-ci", phase=~"Pending|Unknown"})
+summary: The per-build pods Devtron schedules in the devtron-ci namespace, driven
+  by ci-runner inside an Argo Workflow.

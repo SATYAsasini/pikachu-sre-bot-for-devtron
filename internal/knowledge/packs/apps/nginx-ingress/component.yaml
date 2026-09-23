@@ -1,0 +1,50 @@
+id: app.nginx-ingress
+name: NGINX Ingress Controller
+class: app
+summary: Cluster edge. Its metrics tell you whether a problem is the edge or the backend
+  behind it.
+aliases:
+- nginx-ingress
+- ingress-nginx
+- nginx ingress controller
+- nginx
+chartNames:
+- ingress-nginx
+- nginx-ingress
+- nginx-ingress-controller
+labels:
+  app.kubernetes.io/name: ingress-nginx
+images:
+- ingress-nginx/controller
+- k8s.gcr.io/ingress-nginx
+metrics:
+- name: nginx_ingress_controller_requests
+  type: counter
+  labels:
+  - ingress
+  - status
+  - host
+  - method
+  query: sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) by (ingress)
+  means: Split by ingress to localise which service is failing. 502/503/504 each mean
+    something different.
+- name: nginx_ingress_controller_request_duration_seconds
+  type: histogram
+  labels:
+  - ingress
+  - host
+- name: nginx_ingress_controller_ssl_expire_time_seconds
+  type: gauge
+  labels:
+  - host
+  query: (nginx_ingress_controller_ssl_expire_time_seconds - time()) / 86400
+  means: Days until certificate expiry. A cause of total outage that no application
+    metric predicts.
+- name: nginx_ingress_controller_nginx_process_connections
+  type: gauge
+  labels:
+  - state
+- name: nginx_ingress_controller_config_last_reload_successful
+  type: gauge
+  means: 0 means a bad Ingress annotation broke the config reload. The controller
+    keeps serving the LAST GOOD config, so new Ingresses silently do not take effect.

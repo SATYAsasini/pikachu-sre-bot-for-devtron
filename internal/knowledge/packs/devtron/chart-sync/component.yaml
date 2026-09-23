@@ -1,0 +1,38 @@
+id: devtron.chart-sync
+name: Devtron Chart Sync
+class: devtron
+aliases:
+- chart-sync
+- chartsync
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: chart-sync
+images:
+- devtron-labs/chart-sync
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (chart-sync/internals/instruments.go)
+metrics:
+- name: chart_versions_processed_seconds
+  type: histogram
+  labels:
+  - repo_type
+  - chart_name
+  - status
+  help: Total number of chart versions processed successfully
+  means: Split by status to see which chart repos are failing to index.
+  query: sum(rate(chart_versions_processed_seconds_count{status!="success"}[1h]))
+    by (repo_type, chart_name)
+- name: repo_sync_duration_seconds
+  type: histogram
+  labels:
+  - repo_type
+  - repo_name
+  - error_type
+  help: Time taken to sync an entire repository
+  means: error_type names the failure directly, which is unusually helpful — read
+    it before looking at logs.
+summary: Syncs Helm chart repositories into Devtron. When it stalls, new chart versions
+  simply never appear in the UI.

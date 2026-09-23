@@ -1,0 +1,78 @@
+id: devtron.nats
+name: NATS / JetStream (Devtron event bus)
+class: devtron
+summary: The message bus every Devtron microservice uses. Most "Devtron is stuck"
+  incidents are NATS incidents.
+aliases:
+- nats
+- jetstream
+- nats-jetstream
+- devtron-nats
+chartNames:
+- nats
+- devtron-nats
+labels:
+  app.kubernetes.io/name: nats
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/common-lib (pubsub-lib/metrics/metrics.go, constants/constants.go)
+metrics:
+- name: nats_publish_count
+  type: counter
+  labels:
+  - topic
+  - status
+  help: count of successfully published events on nats
+  query: sum(rate(nats_publish_count[5m])) by (topic)
+- name: nats_consuming_count
+  type: counter
+  labels:
+  - topic
+  help: count of nats events whose consumption is in progress
+  means: Started consumptions. Compare against nats_consumption_count — a persistent
+    gap means consumers begin work and never finish it.
+- name: nats_consumption_count
+  type: counter
+  labels:
+  - topic
+  help: count of consumed events on nats
+  means: Completed consumptions. The single most diagnostic comparison in Devtron
+    is publish vs consuming vs consumption per topic.
+  query: sum(rate(nats_publish_count[5m])) by (topic) - sum(rate(nats_consumption_count[5m]))
+    by (topic)
+- name: nats_event_consumption_time
+  type: histogram
+  labels:
+  - topic
+  means: Slow consumers. Rising time with flat publish rate is what eventually produces
+    pending-message alerts.
+- name: nats_event_publish_time
+  type: histogram
+  labels:
+  - topic
+- name: nats_event_delivery_count
+  type: histogram
+  labels:
+  - topic
+  means: Redelivery pressure. High values mean messages are being retried, which usually
+    means a consumer is erroring or timing out.
+- name: nats_publish_error_count
+  type: counter
+  labels:
+  - topic
+  means: Failed publishes. Non-zero means an event was lost at the source, so the
+    downstream state will never converge.
+- name: panic_recovery_count
+  type: counter
+  labels:
+  - panic_type
+  - host
+  - method
+  - path
+- name: reverse_proxy_panic_recovery_count
+  type: counter
+  labels:
+  - panic_type
+  - host
+  - method
+  - path

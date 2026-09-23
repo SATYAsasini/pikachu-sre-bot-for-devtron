@@ -1,0 +1,83 @@
+id: devtron.git-sensor
+name: Devtron Git Sensor
+class: devtron
+aliases:
+- git-sensor
+- gitsensor
+chartNames:
+- devtron
+- devtron-operator
+labels:
+  app: git-sensor
+images:
+- devtron-labs/git-sensor
+namespaces:
+- devtroncd
+repo: github.com/devtron-labs/devtron-services (git-sensor/internals/middleware/instrument.go)
+metrics:
+- name: git_operation_duration_seconds
+  type: histogram
+  labels:
+  - method
+  - status
+  help: Duration of git operation request
+  means: The headline metric. Split the _count series by status to get the git success
+    rate, and by method to see whether fetch, clone or checkout is failing.
+  query: sum(rate(git_operation_duration_seconds_count{status="Failed"}[10m])) by
+    (method)
+- name: git_pull_duration_seconds
+  type: histogram
+  labels:
+  - status
+  - updated
+  help: Duration of git pull request
+- name: active_git_repo_count
+  type: gauge
+  help: no of active git repository
+  means: How many repos are being tracked. A sudden drop means materials were removed
+    or the service lost its state.
+- name: total_material_update
+  type: counter
+  help: no of update received in given repo and branch
+  means: New commits detected. Flat while developers are pushing is the definitive
+    signal that git-sensor has stopped seeing the repo.
+  query: increase(total_material_update[30m])
+- name: git_pull
+  type: counter
+  help: no of update received in given repo and branch
+- name: git_fetch_timeout
+  type: counter
+  help: no of timeouts while running git fetch command
+  means: Fetch timeouts. Rising means the git host is slow or the repo has grown too
+    large for the configured timeout — a common cause of builds that "randomly" stop
+    triggering.
+- name: commit_stats_parsing_errors_counter
+  type: counter
+  help: total number of parsing errors encountered while processing git commit stats.
+- name: panic
+  type: counter
+  help: panic in the app
+- name: http_requests_total
+  type: counter
+  labels:
+  - path
+  - method
+- name: http_response_total
+  type: counter
+  labels:
+  - path
+  - method
+  - status
+- name: http_duration_seconds
+  type: histogram
+  labels:
+  - path
+  - method
+  - status
+- name: http_requests_current
+  type: gauge
+  labels:
+  - path
+  - method
+summary: Polls and clones git repositories, detects new commits and feeds material
+  updates into CI. When it stalls, builds simply never trigger.

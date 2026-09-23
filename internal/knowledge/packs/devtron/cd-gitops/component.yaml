@@ -1,0 +1,90 @@
+id: devtron.cd-gitops
+name: Devtron CD / GitOps (ArgoCD)
+class: devtron
+aliases:
+- argocd
+- argo-cd
+- application-controller
+- devtron-cd
+- gitops
+- devtron cd
+chartNames:
+- argo-cd
+- argocd
+- devtron
+- devtron-operator
+labels:
+  app.kubernetes.io/name: argocd-application-controller
+  app.kubernetes.io/part-of: argocd
+images:
+- argoproj/argocd
+- devtron-labs/argocd
+namespaces:
+- devtroncd
+- argocd
+- devtron-cd
+repo: github.com/devtron-labs/devtron (GitOps duration metrics in internal/middleware)
+metrics:
+- name: cd_duration_seconds
+  type: histogram
+  labels:
+  - appName
+  - status
+  - envName
+  - deploymentType
+  help: Duration of CD process
+  query: sum(rate(cd_duration_seconds_count{status!="Succeeded"}[15m])) by (appName,
+    envName)
+- name: cd_trigger_counter
+  type: counter
+  labels:
+  - appName
+  - envName
+- name: git_ops_duration_seconds
+  type: histogram
+  labels:
+  - operationName
+  - methodName
+  - status
+  help: Duration of GitOps
+  means: The orchestrator half of the deploy. CommitAndPushAllChanges failing means
+    ArgoCD never even sees the change.
+- name: argocd_app_info
+  type: gauge
+  labels:
+  - name
+  - namespace
+  - health_status
+  - sync_status
+  - project
+  means: The ArgoCD half. health_status and sync_status together classify almost every
+    deployment problem.
+  query: argocd_app_info{health_status!="Healthy"}
+- name: argocd_app_sync_total
+  type: counter
+  labels:
+  - name
+  - phase
+  - project
+  means: Sync attempts by phase. A rising Failed phase for one app is the sync loop
+    retrying.
+- name: argocd_app_reconcile
+  type: histogram
+  labels:
+  - namespace
+  means: Reconciliation time. Growth across all apps means the application controller
+    is saturated, not that any one app is broken.
+- name: workqueue_depth
+  type: gauge
+  labels:
+  - name
+  means: Application controller backlog. Sustained depth means deployments are queued,
+    which users experience as "deploy did nothing".
+- name: deployment_status_cron_process_time
+  type: histogram
+  labels:
+  - cronName
+  means: Devtron's own status reconciliation cron. If it stalls, the UI shows a stale
+    deployment status even when ArgoCD is Healthy.
+summary: Devtron's deployment path. The orchestrator commits manifests to git and
+  ArgoCD syncs them; failures land between the two and belong to neither alone.

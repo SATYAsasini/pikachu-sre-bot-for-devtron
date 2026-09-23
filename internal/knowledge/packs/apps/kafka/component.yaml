@@ -1,0 +1,45 @@
+id: app.kafka
+name: Apache Kafka
+class: app
+summary: Distributed log. Consumer lag and under-replicated partitions are the two
+  signals that matter.
+aliases:
+- kafka
+- strimzi
+chartNames:
+- kafka
+- strimzi-kafka-operator
+- cp-kafka
+- confluent-platform
+labels:
+  app.kubernetes.io/name: kafka
+images:
+- confluentinc/cp-kafka
+- bitnami/kafka
+- strimzi/kafka
+metrics:
+- name: kafka_consumergroup_lag
+  type: gauge
+  labels:
+  - consumergroup
+  - topic
+  - partition
+  query: sum(kafka_consumergroup_lag) by (consumergroup, topic)
+  means: The headline metric. Growing lag means consumers cannot keep up; the producer
+    side is usually fine.
+- name: kafka_server_replicamanager_underreplicatedpartitions
+  type: gauge
+  means: Non-zero means a broker is down or slow. Durability is at risk even though
+    producing still works.
+- name: kafka_controller_kafkacontroller_offlinepartitionscount
+  type: gauge
+  means: Offline partitions mean data is unavailable. This is a real outage.
+- name: kafka_log_log_size
+  type: gauge
+  labels:
+  - topic
+  - partition
+- name: kafka_server_brokertopicmetrics_messagesin_total
+  type: counter
+  labels:
+  - topic

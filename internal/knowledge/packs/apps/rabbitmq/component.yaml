@@ -1,0 +1,43 @@
+id: app.rabbitmq
+name: RabbitMQ
+class: app
+summary: Message broker. Queue depth, unacked messages and memory alarms cover most
+  incidents.
+aliases:
+- rabbitmq
+- rabbit
+chartNames:
+- rabbitmq
+- rabbitmq-cluster-operator
+- rabbitmq-ha
+labels:
+  app.kubernetes.io/name: rabbitmq
+images:
+- rabbitmq
+- bitnami/rabbitmq
+metrics:
+- name: rabbitmq_queue_messages_ready
+  type: gauge
+  labels:
+  - queue
+  - vhost
+  means: Backlog waiting for a consumer. Growing means consumers are absent or too
+    slow.
+- name: rabbitmq_queue_messages_unacknowledged
+  type: gauge
+  labels:
+  - queue
+  - vhost
+  means: Delivered but never acked. A large steady value means consumers take messages
+    and die, or never ack — a redelivery loop.
+- name: rabbitmq_queue_consumers
+  type: gauge
+  labels:
+  - queue
+  means: Zero consumers on a growing queue is the whole diagnosis.
+- name: rabbitmq_alarms_memory_used_watermark
+  type: gauge
+  means: 1 means RabbitMQ has BLOCKED publishers. Producers hang with no error; this
+    is the classic "our app froze" incident.
+- name: rabbitmq_alarms_free_disk_space_watermark
+  type: gauge

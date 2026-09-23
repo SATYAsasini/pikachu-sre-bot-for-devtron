@@ -1,15 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_BASE } from '@/lib/api'
 
+/** A run the agent has prepared but deliberately not started. */
+export interface RunProposal {
+  clusterId: number
+  clusterName?: string
+  namespace?: string
+  appName?: string
+  ask: string
+  options?: { depth?: string; metrics?: string; logs?: string }
+}
+
 export interface ChatTurn {
   role: 'user' | 'agent'
   text: string
   /** Only on an agent turn that failed. */
   error?: string
+  /** Which route answered: platform, runs, propose, or Devtron Intelligence. */
+  source?: 'platform' | 'runs' | 'propose' | 'intelligence'
   /** Devtron's request id, worth keeping for tracing a bad answer. */
   requestId?: string
   steps?: number
   ms?: number
+  /** Attached to the turn that suggested it. */
+  proposal?: RunProposal
 }
 
 const KEY = 'sre.chat'
@@ -148,11 +162,28 @@ function handleFrame(
       {
         role: 'agent',
         text: String(payload.text ?? ''),
+        source: (payload.source as ChatTurn['source']) ?? 'intelligence',
         requestId: payload.requestId as string | undefined,
         steps: payload.steps as number | undefined,
         ms: payload.ms as number | undefined,
       },
     ])
+    return
+  }
+
+  // The proposal rides on the answer that introduced it, so the card renders
+  // under the sentence explaining it rather than as an orphan bubble.
+  if (event === 'proposal') {
+    setTurns((prev) => {
+      const next = [...prev]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].role === 'agent') {
+          next[i] = { ...next[i], proposal: payload as unknown as RunProposal }
+          break
+        }
+      }
+      return next
+    })
     return
   }
   if (event === 'error') {

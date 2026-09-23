@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { MessageSquareText, X } from 'lucide-react'
+import { MessageSquareText, PlayCircle, X } from 'lucide-react'
 import { Textarea } from '@/components/ui/textarea'
 import { Markdown } from '@/components/common/markdown'
 import { Text } from '@/components/common/text'
@@ -8,7 +8,9 @@ import { AgentFrames } from '@/components/agent/agent-frames'
 import { AiTrigger } from '@/components/agent/ai-trigger'
 import { DevtronGlyph } from '@/components/layout/devtron-mark'
 import { ThinkingStream } from '@/components/run/thinking-stream'
-import { useChat } from '@/lib/use-chat'
+import { useChat, type RunProposal } from '@/lib/use-chat'
+import { useStartRun } from '@/lib/use-start-run'
+import { Chip } from '@/components/common/status'
 import { duration } from '@/lib/format'
 
 /**
@@ -133,11 +135,33 @@ export function ChatPanel({
 
             <div ref={scroller} data-lenis-prevent className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
               {turns.length === 0 && !busy ? (
-                <div className="py-8 text-center">
-                  <Text tone="muted">Ask anything about {clusterName ?? 'this cluster'}.</Text>
-                  <Text tone="fine" className="mt-1">
-                    This is a conversation, not an investigation — it leaves no run in your history.
-                  </Text>
+                <div className="space-y-3 py-6">
+                  <div className="text-center">
+                    <Text tone="muted">Ask anything about {clusterName ?? 'this cluster'} — or about me.</Text>
+                    <Text tone="fine" className="mt-1">
+                      A conversation, not an investigation. It leaves no run in your history.
+                    </Text>
+                  </div>
+                  {/* Four routes answer this panel, and nobody would guess the
+                      last three from an empty box. */}
+                  <ul className="mx-auto max-w-sm space-y-1">
+                    {[
+                      'Why is the scheduler reported down?',
+                      'What did my recent runs find?',
+                      'What permissions does your API token need?',
+                      'Investigate the pgvector crash loop',
+                    ].map((q) => (
+                      <li key={q}>
+                        <button
+                          type="button"
+                          onClick={() => void send(q)}
+                          className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-left text-[0.6875rem] text-muted-foreground transition-colors hover:border-accent-strong/40 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                        >
+                          {q}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
 
@@ -216,16 +240,100 @@ function Turn({ turn }: { turn: ReturnType<typeof useChat>['turns'][number] }) {
     )
   }
 
+  const src = turn.source ?? 'intelligence'
+
   return (
-    <div className="rounded-xl rounded-bl-sm border border-border bg-well px-3 py-2">
-      <Markdown tight>{turn.text}</Markdown>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2 border-t border-border pt-1.5">
-        <DevtronGlyph aria-hidden className="h-2.5 w-auto shrink-0" />
+    <div className="space-y-2">
+      <div className="rounded-xl rounded-bl-sm border border-border bg-well px-3 py-2">
+        <Markdown tight>{turn.text}</Markdown>
+
+        {/* Where the answer came from. Four routes answer this panel, and an
+            answer about the agent's own history is a different kind of claim
+            from one Devtron made about a cluster — so it says which. */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 border-t border-border pt-1.5">
+          {src === 'intelligence' ? (
+            <>
+              <DevtronGlyph aria-hidden className="h-2.5 w-auto shrink-0" />
+              <Text tone="fine" as="span">
+                Devtron Intelligence
+                {turn.steps ? ` · ${turn.steps} steps` : ''}
+                {turn.ms ? ` · ${duration(turn.ms)}` : ''}
+              </Text>
+            </>
+          ) : (
+            <Text tone="fine" as="span">
+              {src === 'runs'
+                ? 'Read from your run history'
+                : src === 'platform'
+                  ? 'About this agent — no cluster was queried'
+                  : 'Prepared, not started'}
+            </Text>
+          )}
+        </div>
+      </div>
+
+      {turn.proposal ? <Proposal proposal={turn.proposal} /> : null}
+    </div>
+  )
+}
+
+/**
+ * A run the agent prepared and did not start.
+ *
+ * Starting one costs a Devtron call, two models and a tool budget, and it
+ * leaves a permanent record. Doing that because somebody used the word
+ * "investigate" in a sentence would be presumptuous, so the parameters are
+ * shown and the decision stays with the reader.
+ */
+function Proposal({ proposal }: { proposal: RunProposal }) {
+  const { start, pending } = useStartRun()
+  const [fired, setFired] = useState(false)
+
+  const rows: [string, string][] = [
+    ['Cluster', proposal.clusterName || String(proposal.clusterId)],
+    ...(proposal.namespace ? ([['Namespace', proposal.namespace]] as [string, string][]) : []),
+    ['Question', proposal.ask],
+    ['Depth', proposal.options?.depth ?? 'auto'],
+    ['Metrics', proposal.options?.metrics ?? 'auto'],
+    ['Logs', proposal.options?.logs ?? 'auto'],
+  ]
+
+  return (
+    <div className="overflow-hidden rounded-xl border-2 border-accent-strong/40 bg-accent-strong/5 shadow-card">
+      <div className="flex items-center gap-1.5 border-b border-accent-strong/25 px-3 py-2">
+        <PlayCircle aria-hidden className="size-3.5 shrink-0 text-accent-strong" />
+        <span className="text-xs font-semibold">Run ready to trigger</span>
+        <Chip tone="neutral" className="ml-auto shrink-0">
+          leaves a record
+        </Chip>
+      </div>
+
+      <dl className="divide-y divide-border/60">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex gap-2 px-3 py-1.5">
+            <dt className="w-20 shrink-0 text-[0.625rem] font-medium tracking-wider text-muted-foreground uppercase">
+              {k}
+            </dt>
+            <dd className="min-w-0 flex-1 text-[0.6875rem] leading-relaxed">{v}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="flex items-center gap-2 border-t border-accent-strong/25 px-3 py-2">
         <Text tone="fine" as="span">
-          Answered by Devtron Intelligence
-          {turn.steps ? ` · ${turn.steps} steps` : ''}
-          {turn.ms ? ` · ${duration(turn.ms)}` : ''}
+          {fired ? 'Started — opening the run…' : 'Unlike this chat, a run is recorded.'}
         </Text>
+        <AiTrigger
+          size="sm"
+          busy={pending || fired}
+          onClick={() => {
+            setFired(true)
+            start({ ask: proposal.ask })
+          }}
+          className="ml-auto"
+        >
+          {fired ? 'Starting…' : 'Trigger run'}
+        </AiTrigger>
       </div>
     </div>
   )

@@ -1,0 +1,22 @@
+bin/
+dist/
+*.test
+*.out
+coverage.*
+config.yaml
+.env
+.DS_Store
+.idea/
+.vscode/
+web/node_modules/
+web/dist/
+dist/
+hack/.env
+.dev/
+# Copied from web/dist by `make web` / the Docker build; .gitkeep keeps the
+# go:embed pattern valid on a fresh checkout.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# Local assistant notes
+CLAUDE.md

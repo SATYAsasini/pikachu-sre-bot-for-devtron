@@ -1,0 +1,48 @@
+# Copy to config.yaml (git-ignored) or point SRE_CONFIG at it.
+# Every key can be overridden with an SRE_* environment variable.
+#
+# The only things genuinely required are the Devtron URL, a view-only Devtron
+# API token, a database URL, and one model credential.
+
+http:
+  addr: ":8090"
+
+database:
+  url: "postgres://sre@localhost:5432/sre?sslmode=disable"
+  maxConns: 10
+  migrateOnStart: true
+
+log:
+  level: info          # debug | info | warn | error
+  format: text         # text | json
+
+devtron:
+  # The Devtron host. Every cluster is reached through it; there is no
+  # kubeconfig anywhere in this service.
+  url: "https://devtron.example.com"
+  # A view-only Devtron API token. Prefer SRE_DEVTRON_TOKEN over putting it here.
+  token: ""
+  intelligencePath: "/proxy/athena/intelligence"
+  timeoutSeconds: 30
+  insecureTls: false
+
+models:
+  # Leave provider empty to auto-detect from whichever credential is present:
+  # SRE_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY, or SRE_GEMINI_API_KEY /
+  # GEMINI_API_KEY / GOOGLE_API_KEY.
+  provider: ""         # anthropic | gemini | "" to auto-detect
+  # Either may be any model id the provider accepts. Empty picks that
+  # provider's default: claude-sonnet-5 / claude-opus-5, or
+  # gemini-2.5-flash / gemini-2.5-pro.
+  fast: ""             # the judge agent
+  strong: ""           # the sre agent
+  effort: ""           # anthropic thinking effort: low|medium|high|xhigh|max
+
+run:
+  concurrency: 4
+  intelligenceTimeoutSeconds: 300
+  timeoutSeconds: 900
+  maxToolCalls: 25
+  maxModelTokens: 400000
+
+features: {}

@@ -1,0 +1,35 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: sre, POSTGRES_PASSWORD: sre, POSTGRES_DB: sre }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U sre" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod, cache: true }
+      - run: go build ./...
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with: { version: latest }
+      - run: go test -race -count=1 ./...
+        env: { SRE_DATABASE_URL: "postgres://sre:sre@localhost:5432/sre?sslmode=disable", SRE_TEST_DB: "1" }
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci
+        working-directory: web
+      - run: npm run lint
+        working-directory: web
+      - run: npm run build
+        working-directory: web

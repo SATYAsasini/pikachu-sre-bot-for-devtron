@@ -130,7 +130,7 @@ func (s *Service) Clusters(ctx context.Context, usableOnly bool) ([]devtron.Clus
 	}
 	out := make([]devtron.Cluster, 0, len(all))
 	for _, c := range all {
-		if cap := s.Get(c.ID); cap != nil && cap.Reach.Investigable() {
+		if measured := s.Get(c.ID); measured != nil && measured.Reach.Investigable() {
 			out = append(out, c)
 		}
 	}

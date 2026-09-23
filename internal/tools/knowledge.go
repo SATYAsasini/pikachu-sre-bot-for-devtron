@@ -34,7 +34,7 @@ func KnowledgeTools() []Tool {
 	}
 }
 
-func knowledgeIdentify(ctx context.Context, d *Deps, a IdentifyArgs) (*Result, error) {
+func knowledgeIdentify(_ context.Context, d *Deps, a IdentifyArgs) (*Result, error) {
 	cat, bad := requireKnowledge(d)
 	if bad != nil {
 		return bad, nil

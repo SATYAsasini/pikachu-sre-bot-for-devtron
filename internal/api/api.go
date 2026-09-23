@@ -45,7 +45,7 @@ type Server struct {
 // Handler builds the router.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, middleware.Compress(5))
+	r.Use(middleware.RequestID, middleware.Recoverer, middleware.Compress(5))
 	r.Use(cors)
 
 	r.Route("/v1", func(r chi.Router) {
@@ -95,11 +95,11 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
 	// The live client, not the static config: a host saved through Settings
 	// never reaches Cfg, so reading Cfg reported an empty URL on exactly the
 	// installations that were configured correctly.
@@ -159,14 +159,14 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 		}
 		// The measurement rides along, so the setup screen and the picker read
 		// the same row rather than each fetching its own idea of the truth.
-		if cap := s.Caps.Get(c.ID); cap != nil {
-			row["reach"] = cap.Reach
-			row["reachWhy"] = cap.Reach.Why()
-			row["probedAt"] = cap.ProbedAt
-			row["latencyMs"] = cap.LatencyMs
-			row["investigable"] = cap.Reach.Investigable()
-			if cap.Detail != "" {
-				row["detail"] = cap.Detail
+		if measured := s.Caps.Get(c.ID); measured != nil {
+			row["reach"] = measured.Reach
+			row["reachWhy"] = measured.Reach.Why()
+			row["probedAt"] = measured.ProbedAt
+			row["latencyMs"] = measured.LatencyMs
+			row["investigable"] = measured.Reach.Investigable()
+			if measured.Detail != "" {
+				row["detail"] = measured.Detail
 			}
 		}
 		out = append(out, row)

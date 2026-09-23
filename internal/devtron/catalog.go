@@ -191,7 +191,7 @@ type AppEnvironment struct {
 }
 
 // DevtronApp is a Devtron (CI/CD) application with its environment rows.
-type DevtronApp struct {
+type DevtronApp struct { //nolint:revive // Devtron's own name, distinct from Helm apps
 	AppID        int              `json:"appId"`
 	AppName      string           `json:"appName"`
 	ProjectID    int              `json:"projectId"`

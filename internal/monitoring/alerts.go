@@ -136,8 +136,8 @@ func New(dc *devtron.Client, clusterID int, stack *devtron.MonitoringStack) *Cli
 // Stack exposes what was discovered.
 func (c *Client) Stack() *devtron.MonitoringStack { return c.stack }
 
-// Alerts lists currently active alerts. Filters are applied client-side so
-// the two backends behave identically.
+// AlertFilter narrows Alerts. Filters are applied client-side so the two
+// backends behave identically.
 type AlertFilter struct {
 	Namespace string
 	// NameLike matches part of the alert name, case-insensitively.

@@ -14,7 +14,7 @@ import (
 // configured models and the live budget — rather than written out by hand in
 // the UI. A hand-copied diagram is wrong within a week of the first tool
 // being added, and a diagram nobody trusts is worse than none.
-func (s *Server) harness(w http.ResponseWriter, r *http.Request) {
+func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 	judge, sre := agents.AgentNames()
 	allowed := agents.SREToolNames()
 

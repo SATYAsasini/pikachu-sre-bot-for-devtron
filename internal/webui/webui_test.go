@@ -11,7 +11,7 @@ import (
 func serve(t *testing.T, fsys fs.FS, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Handler(fsys).ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	Handler(fsys).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, target, nil))
 	return rec
 }
 

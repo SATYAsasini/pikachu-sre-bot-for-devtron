@@ -74,7 +74,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, b)
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, b)
 		flusher.Flush()
 	}
 

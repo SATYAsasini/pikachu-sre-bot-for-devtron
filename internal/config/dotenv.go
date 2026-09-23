@@ -14,11 +14,11 @@ import (
 // environment always win, so a deployment's own configuration is never
 // overridden by a file that happens to be lying around.
 func loadDotEnv(path string) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // the operator chooses the .env path
 	if err != nil {
 		return // absent is the normal case in a container
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {

@@ -14,6 +14,7 @@ import (
 // Flavor names a monitoring backend.
 type Flavor string
 
+// The monitoring backends discovery can recognise.
 const (
 	FlavorPrometheus      Flavor = "prometheus"
 	FlavorVictoriaMetrics Flavor = "victoriametrics"

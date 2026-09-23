@@ -168,7 +168,7 @@ func (g *Guard) BeforeTool(agentName string) llmagent.BeforeToolCallback {
 
 // AfterTool records the result summary and strips the internal seq argument.
 func (g *Guard) AfterTool(agentName string) llmagent.AfterToolCallback {
-	return func(ctx agent.ToolContext, t adktool.Tool, args, result map[string]any, err error) (map[string]any, error) {
+	return func(ctx agent.ToolContext, t adktool.Tool, _, result map[string]any, err error) (map[string]any, error) {
 		payload := map[string]any{"tool": t.Name()}
 		outcome := "ok"
 		if err != nil {
@@ -205,7 +205,7 @@ func (g *Guard) AfterTool(agentName string) llmagent.AfterToolCallback {
 
 // BeforeModel stops the run when the token budget is spent.
 func (g *Guard) BeforeModel(agentName string) llmagent.BeforeModelCallback {
-	return func(ctx agent.CallbackContext, req *model.LLMRequest) (*model.LLMResponse, error) {
+	return func(ctx agent.CallbackContext, _ *model.LLMRequest) (*model.LLMResponse, error) {
 		if g.budget.MaxModelTokens > 0 && g.budget.ModelTokens.Load() >= int64(g.budget.MaxModelTokens) {
 			g.markExceeded(ctx, agentName, "modelTokens")
 		}

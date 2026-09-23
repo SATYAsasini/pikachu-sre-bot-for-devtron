@@ -94,6 +94,7 @@ func TestExplainAPIError(t *testing.T) {
 		_ = e.UnmarshalJSON([]byte(body))
 		return e
 	}
+	//nolint:gosec // an API error body, not a credential
 	const credit = `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}`
 
 	tests := []struct {

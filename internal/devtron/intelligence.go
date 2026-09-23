@@ -96,14 +96,15 @@ func (c *Client) Intelligence(ctx context.Context, req IntelligenceRequest, onEv
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	// Athena authenticates from the cookie, not the Authorization header.
-	httpReq.AddCookie(&http.Cookie{Name: "argocd.token", Value: token})
+	// An outbound request cookie: Secure/HttpOnly/SameSite only apply to Set-Cookie.
+	httpReq.AddCookie(&http.Cookie{Name: "argocd.token", Value: token}) //nolint:gosec
 
 	started := time.Now()
 	resp, err := c.stream.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("intelligence: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		var buf bytes.Buffer
 		_, _ = buf.ReadFrom(resp.Body)

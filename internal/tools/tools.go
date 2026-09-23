@@ -32,12 +32,12 @@ import (
 type ErrorKind string
 
 const (
-	// ErrInput: the caller's arguments were wrong. Never retry as-is.
+	// ErrInput means the caller's arguments were wrong. Never retry as-is.
 	ErrInput ErrorKind = "input"
-	// ErrCluster: the target cluster refused or could not serve (RBAC, not
+	// ErrCluster means the target cluster refused or could not serve (RBAC, not
 	// found, timeout). Retry only if Retryable.
 	ErrCluster ErrorKind = "cluster"
-	// ErrPlatform: our own side failed (backend missing, bug). Do not retry
+	// ErrPlatform means our own side failed (backend missing, bug). Do not retry
 	// against the cluster in a loop.
 	ErrPlatform ErrorKind = "platform"
 )
@@ -337,7 +337,7 @@ func (c *Cache) Put(key string, res *Result) {
 }
 
 // Cached wraps a fetch with the per-run cache.
-func Cached(ctx context.Context, d *Deps, key string, fetch func() (*Result, error)) (*Result, error) {
+func Cached(_ context.Context, d *Deps, key string, fetch func() (*Result, error)) (*Result, error) {
 	if d != nil && d.Cache != nil {
 		if r, ok := d.Cache.Get(key); ok {
 			return r, nil

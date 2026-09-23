@@ -76,7 +76,7 @@ func (c *Client) ProxyGet(ctx context.Context, scope ProxyScope, id int, k8sPath
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -359,9 +360,9 @@ func toLLMResponse(msg *anthropic.Message) *model.LLMResponse {
 		ModelVersion: string(msg.Model),
 		TurnComplete: true,
 		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
-			PromptTokenCount:     int32(msg.Usage.InputTokens),
-			CandidatesTokenCount: int32(msg.Usage.OutputTokens),
-			TotalTokenCount:      int32(msg.Usage.InputTokens + msg.Usage.OutputTokens),
+			PromptTokenCount:     clampInt32(msg.Usage.InputTokens),
+			CandidatesTokenCount: clampInt32(msg.Usage.OutputTokens),
+			TotalTokenCount:      clampInt32(msg.Usage.InputTokens + msg.Usage.OutputTokens),
 		},
 	}
 	switch msg.StopReason {
@@ -436,4 +437,16 @@ func explainAPIError(err error) string {
 	default:
 		return detail
 	}
+}
+
+// clampInt32 narrows a token count for genai's int32 usage fields without
+// wrapping negative on an absurd value.
+func clampInt32(n int64) int32 {
+	switch {
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	case n < 0:
+		return 0
+	}
+	return int32(n)
 }

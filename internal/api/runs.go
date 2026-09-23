@@ -98,8 +98,8 @@ func (s *Server) preflightBlock(r *http.Request, req runs.CreateRequest) string 
 	}
 	ctx := r.Context()
 
-	if cap := s.Caps.Get(req.ClusterID); cap != nil && !cap.Reach.Investigable() {
-		return "Cluster " + req.ClusterName + " cannot be read. " + cap.Reach.Why() +
+	if measured := s.Caps.Get(req.ClusterID); measured != nil && !measured.Reach.Investigable() {
+		return "Cluster " + req.ClusterName + " cannot be read. " + measured.Reach.Why() +
 			" Nothing useful can be concluded from it, so this run was not started."
 	}
 
@@ -248,7 +248,7 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		case e, open := <-live:
 			if !open {
@@ -286,7 +286,7 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, event string, v any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 	f.Flush()
 }
 

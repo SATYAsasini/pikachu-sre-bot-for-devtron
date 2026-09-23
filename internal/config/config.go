@@ -99,7 +99,7 @@ func Load() (*Config, error) {
 		}
 	}
 	if path != "" {
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) //nolint:gosec // the operator chooses the config path
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}

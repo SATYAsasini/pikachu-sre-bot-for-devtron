@@ -19,20 +19,20 @@ import (
 type Reach string
 
 const (
-	// ReachUsable: the cluster answered and returned objects.
+	// ReachUsable means the cluster answered and returned objects.
 	ReachUsable Reach = "usable"
-	// ReachEmpty: it answered, but nothing came back. Either genuinely empty
+	// ReachEmpty means it answered, but nothing came back. Either genuinely empty
 	// or filtered away by RBAC — indistinguishable from here, and that
 	// ambiguity must be reported rather than resolved by guessing.
 	ReachEmpty Reach = "empty"
-	// ReachForbidden: Devtron refused. A permissions problem, not an outage.
+	// ReachForbidden means Devtron refused. A permissions problem, not an outage.
 	ReachForbidden Reach = "forbidden"
-	// ReachError: the orchestrator failed trying to serve it.
+	// ReachError means the orchestrator failed trying to serve it.
 	ReachError Reach = "error"
-	// ReachUnreachable: the request timed out. The orchestrator cannot talk
+	// ReachUnreachable means the request timed out. The orchestrator cannot talk
 	// to the cluster, which is the most common state on a large install.
 	ReachUnreachable Reach = "unreachable"
-	// ReachUnknown: not probed yet.
+	// ReachUnknown means not probed yet.
 	ReachUnknown Reach = "unknown"
 )
 
@@ -142,29 +142,29 @@ func NewProber(c *Client) *Prober {
 
 // Probe measures one cluster: can we reach it, and which kinds answer.
 func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string) Capability {
-	cap := Capability{ClusterID: clusterID, ClusterName: clusterName, ProbedAt: time.Now().UTC()}
+	measured := Capability{ClusterID: clusterID, ClusterName: clusterName, ProbedAt: time.Now().UTC()}
 	started := time.Now()
 
 	reachCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 	list, err := p.c.ListResources(reachCtx, ResourceQuery{ClusterID: clusterID, GVK: GVKPod})
-	cap.LatencyMs = time.Since(started).Milliseconds()
+	measured.LatencyMs = time.Since(started).Milliseconds()
 
 	switch {
 	case err == nil && list.Len() > 0:
-		cap.Reach = ReachUsable
+		measured.Reach = ReachUsable
 	case err == nil:
-		cap.Reach = ReachEmpty
+		measured.Reach = ReachEmpty
 	default:
-		cap.Reach, cap.Detail = classifyProbeError(err, reachCtx)
-		return cap
+		measured.Reach, measured.Detail = classifyProbeError(reachCtx, err)
+		return measured
 	}
 
 	// Reachable: find out which kinds this token can actually read. These run
 	// together because they are independent and the cluster has just proven
 	// it answers quickly.
-	cap.Kinds = p.probeKinds(ctx, clusterID)
-	return cap
+	measured.Kinds = p.probeKinds(ctx, clusterID)
+	return measured
 }
 
 func (p *Prober) probeKinds(ctx context.Context, clusterID int) []KindAccess {
@@ -179,7 +179,7 @@ func (p *Prober) probeKinds(ctx context.Context, clusterID int) []KindAccess {
 			list, err := p.c.ListResources(kctx, ResourceQuery{ClusterID: clusterID, GVK: gvk})
 			access := KindAccess{Kind: gvk.Kind}
 			if err != nil {
-				reach, detail := classifyProbeError(err, kctx)
+				reach, detail := classifyProbeError(kctx, err)
 				access.Allowed = false
 				access.Detail = string(reach) + ": " + detail
 			} else {
@@ -235,7 +235,7 @@ func reachRank(r Reach) int {
 
 // classifyProbeError separates "you may not" from "it did not answer", which
 // call for completely different responses from an operator.
-func classifyProbeError(err error, ctx context.Context) (Reach, string) {
+func classifyProbeError(ctx context.Context, err error) (Reach, string) {
 	var de *Error
 	if errors.As(err, &de) {
 		switch {

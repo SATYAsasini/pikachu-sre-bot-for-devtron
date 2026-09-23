@@ -33,23 +33,24 @@ type Series struct {
 	Points []Point           `json:"points"`
 }
 
-// Min, Max and Last summarise a series without shipping every point to the
-// model, which is almost always what a caller actually needs.
-func (s Series) Stats() (min, max, last float64) {
-	min, max = math.Inf(1), math.Inf(-1)
+// Stats returns the lowest, highest and last value, which summarises a
+// series without shipping every point to the model — almost always what a
+// caller actually needs.
+func (s Series) Stats() (lo, hi, last float64) {
+	lo, hi = math.Inf(1), math.Inf(-1)
 	for _, p := range s.Points {
-		if p.Value < min {
-			min = p.Value
+		if p.Value < lo {
+			lo = p.Value
 		}
-		if p.Value > max {
-			max = p.Value
+		if p.Value > hi {
+			hi = p.Value
 		}
 		last = p.Value
 	}
 	if len(s.Points) == 0 {
 		return 0, 0, 0
 	}
-	return min, max, last
+	return lo, hi, last
 }
 
 // QueryResult is a decoded Prometheus-compatible answer.

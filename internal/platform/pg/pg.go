@@ -41,7 +41,7 @@ func Connect(ctx context.Context, url string, maxConns int32) (*pgxpool.Pool, er
 // Migrate applies all embedded migrations that have not run yet.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	goose.SetBaseFS(migrations.FS)
 	goose.SetLogger(goose.NopLogger())

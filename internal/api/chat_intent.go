@@ -46,12 +46,25 @@ var (
 	// harness, not an instruction to go and do a deep dive.
 	reAboutSelf = regexp.MustCompile(`(?i)\b(why did you|why didn.t you|how do you (decide|choose|know)|what do you do when)\b`)
 
-	// An explicit request to go and investigate, rather than to be told
-	// something. These earn a run rather than an answer.
+	// A sentence that *opens* with an instruction is a request for work, and
+	// outranks everything except a question about a past decision. "Investigate
+	// the last run's root cause" mentions our history but is plainly an order.
+	reProposeLead = regexp.MustCompile(`(?i)^\s*((can|could|would|will) you\s+|please\s+|i want (you )?to\s+)*(investigate|debug|dig into|look into|find out why|do an? (rca|investigation|analysis)|run an? (investigation|analysis))\b`)
+
+	// The same vocabulary anywhere else in the sentence. Weaker, because a
+	// lookup can legitimately contain it.
 	rePropose = regexp.MustCompile(`(?i)\b(investigate|debug|dig into|look into|root cause|rca|find out why|deep dive|run an? (investigation|analysis))\b`)
 
-	// Questions about this agent's own history.
-	reRuns = regexp.MustCompile(`(?i)\b(last run|recent runs?|previous runs?|run history|what did (you|the run) find|earlier (run|investigation)|past runs?|how many runs?)\b`)
+	// Asking to be shown something we already hold. This is a lookup — a
+	// database read — and it must beat rePropose, because "list the alerts we
+	// already debugged" contains the word "debug" while asking for the
+	// opposite of a debugging session.
+	reLookup = regexp.MustCompile(`(?i)\b(list|show( me)?|how many|what are|which|give me|tell me about)\b.{0,50}\b(runs?|alerts?|investigat(ed|ions?)|debugged|debugs?|history|rca)\b`)
+
+	// Anything already done. "Already debugged" is history, not a request.
+	reRuns = regexp.MustCompile(`(?i)\b(last run|recent runs?|previous runs?|run history|history of (our |my |the )?runs?|` +
+		`what did (you|the run|we) find|earlier (run|investigation)|past runs?|how many runs?|` +
+		`already (debugged|investigated|looked at|done)|(runs?|alerts?) we (already )?(debugged|investigated))\b`)
 
 	// Questions about the agent itself rather than the cluster.
 	rePlatform = regexp.MustCompile(`(?i)\b(how do you work|how does (this|it) work|what can you do|who are you|what are you|` +
@@ -72,10 +85,16 @@ func classify(msg string) intent {
 	switch {
 	case reAboutSelf.MatchString(msg):
 		return intentPlatform
+	// An opening instruction is unambiguous: do this.
+	case reProposeLead.MatchString(msg):
+		return intentPropose
+	// Then lookups. "List the alerts we already debugged" is a read of our own
+	// history that happens to contain the word "debug"; treating it as a
+	// request to go and debug something is both wrong and expensive.
+	case reLookup.MatchString(msg), reRuns.MatchString(msg):
+		return intentRuns
 	case rePropose.MatchString(msg):
 		return intentPropose
-	case reRuns.MatchString(msg):
-		return intentRuns
 	case rePlatform.MatchString(msg):
 		return intentPlatform
 	default:

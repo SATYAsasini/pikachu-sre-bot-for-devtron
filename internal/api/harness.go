@@ -108,7 +108,10 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 				"path":    "POST /v1/chat",
 				"creates": "Nothing. The server is stateless; the browser holds the thread in sessionStorage",
 				"why":     "A question somebody wondered aloud is not an investigation. Minting a run for one filled history with rows nobody wanted and could not delete.",
-				"stages":  "Devtron Intelligence only — no judge, no SRE agent, no ledger",
+				"stages": "Routed by intent: questions about the agent and about past runs are answered from this " +
+					"process without touching a cluster; a question about the cluster goes to Devtron Intelligence; " +
+					"an explicit instruction to investigate prepares a run rather than starting one. No judge, no " +
+					"SRE agent, no ledger.",
 			},
 		},
 

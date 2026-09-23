@@ -12,6 +12,7 @@ import { useChat, type RunProposal } from '@/lib/use-chat'
 import { useStartRun } from '@/lib/use-start-run'
 import { Chip } from '@/components/common/status'
 import { duration } from '@/lib/format'
+import type { RunOptions, SourceMode } from '@/lib/types'
 
 /**
  * A conversation, not an investigation.
@@ -169,10 +170,24 @@ export function ChatPanel({
                 <Turn key={i} turn={t} />
               ))}
 
+              {/* Only once there is something to show. An empty trail used to
+                  render the run page's "Devtron counted N steps but did not
+                  keep the text" line, which is meaningless in a conversation
+                  and read as an answer. */}
               {busy ? (
-                <div className="space-y-2">
-                  <ThinkingStream lines={thinking} total={Math.max(thinking.length, 1)} live />
-                </div>
+                thinking.length > 0 ? (
+                  <ThinkingStream lines={thinking} total={thinking.length} live />
+                ) : (
+                  <div className="flex items-center gap-2 rounded-xl border border-border bg-well px-3 py-2">
+                    <span aria-hidden className="relative flex size-1.5 shrink-0">
+                      <span className="absolute inline-flex size-full animate-ping rounded-full bg-accent-strong opacity-70" />
+                      <span className="relative inline-flex size-1.5 rounded-full bg-accent-strong" />
+                    </span>
+                    <Text tone="fine" as="span">
+                      Thinking…
+                    </Text>
+                  </div>
+                )
               ) : null}
             </div>
 
@@ -285,6 +300,14 @@ function Turn({ turn }: { turn: ReturnType<typeof useChat>['turns'][number] }) {
  * "investigate" in a sentence would be presumptuous, so the parameters are
  * shown and the decision stays with the reader.
  */
+/** The proposal's knobs, narrowed to the unions the API expects. */
+function proposalOptions(p: RunProposal): RunOptions {
+  const depth = (['auto', 'quick', 'deep'] as const).find((d) => d === p.options?.depth) ?? 'auto'
+  const source = (v: string | undefined): SourceMode =>
+    (['auto', 'on', 'off'] as const).find((s) => s === v) ?? 'auto'
+  return { depth, metrics: source(p.options?.metrics), logs: source(p.options?.logs) }
+}
+
 function Proposal({ proposal }: { proposal: RunProposal }) {
   const { start, pending } = useStartRun()
   const [fired, setFired] = useState(false)
@@ -328,7 +351,10 @@ function Proposal({ proposal }: { proposal: RunProposal }) {
           busy={pending || fired}
           onClick={() => {
             setFired(true)
-            start({ ask: proposal.ask })
+            // The card lists depth, metrics and logs, so the run has to
+            // actually use them — passing only the question quietly ignored
+            // every parameter it had just shown.
+            start({ ask: proposal.ask, options: proposalOptions(proposal) })
           }}
           className="ml-auto"
         >

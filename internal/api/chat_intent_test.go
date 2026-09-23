@@ -20,7 +20,15 @@ func TestClassify(t *testing.T) {
 		{"find out why the rollout stalled", intentPropose},
 		{"run an investigation on payments-api", intentPropose},
 
-		// Our own history.
+		// Our own history. A lookup beats a request for work even when it
+		// contains the vocabulary of one — these were all misrouted in the
+		// first version and reported from the UI.
+		{"list the alerts we already debug", intentRuns},
+		{"list the alerts we already debugged", intentRuns},
+		{"List the history of our run debug", intentRuns},
+		{"show me what we have investigated", intentRuns},
+		{"how many alerts have we debugged", intentRuns},
+		{"which runs did an rca", intentRuns},
 		{"what did my last run find?", intentRuns},
 		{"show me recent runs", intentRuns},
 		{"how many runs have failed", intentRuns},
@@ -58,8 +66,13 @@ func TestClassify(t *testing.T) {
 func TestClassifyPrecedence(t *testing.T) {
 	t.Parallel()
 
-	if got := classify("look at the last run, then investigate it properly"); got != intentPropose {
-		t.Errorf("want propose when both are present, got %s", got)
+	// A bare lookup wins over the vocabulary of work…
+	if got := classify("list the alerts we already debugged"); got != intentRuns {
+		t.Errorf("want runs for a lookup, got %s", got)
+	}
+	// …but an explicit instruction with no lookup verb is still a request.
+	if got := classify("investigate the last run's root cause properly"); got != intentPropose {
+		t.Errorf("want propose for an instruction, got %s", got)
 	}
 	if got := classify("how do you work, and what did recent runs find"); got != intentRuns {
 		t.Errorf("want runs ahead of platform, got %s", got)

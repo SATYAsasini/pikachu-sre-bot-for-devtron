@@ -1,0 +1,513 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Work+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Design language: clean engineering. Subtle borders, muted neutrals, a
+  monospace face for anything a machine produced (ids, metrics, expressions),
+  and exactly four semantic status hues. Dark mode is a deep slate (near-OLED),
+  not an inverted light theme; both modes are defined token for token.
+*/
+
+@theme inline {
+    --font-sans: "Work Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "Outfit", "Work Sans", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --radius-sm: calc(var(--radius) * 0.55);
+    --radius-md: calc(var(--radius) * 0.75);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    /* Surface one step above the card, for nested panels and code wells. */
+    --color-well: var(--well);
+
+    /* Semantic status. Four, and only four. */
+    --color-ok: var(--ok);
+    --color-warn: var(--warn);
+    --color-bad: var(--bad);
+    --color-unknown: var(--unknown);
+    --color-sky: var(--sky);
+    --color-accent-strong: var(--accent-strong);
+    --shadow-card: var(--elev-1);
+    --shadow-raised: var(--elev-2);
+    --color-bolt: var(--bolt);
+    --color-bolt-ink: var(--bolt-ink);
+    --font-display: var(--font-display);
+}
+
+:root {
+    /* Softer all round. 8px reads as "drawn with a ruler"; 12px is the point
+       at which a bordered surface stops looking like a box and starts looking
+       like a card, and every derived size scales off this one. */
+    --radius: 0.75rem;
+
+    --background: #f7f7f5;
+    --foreground: #18181b;
+    --card: #ffffff;
+    --card-foreground: #18181b;
+    --popover: #ffffff;
+    --popover-foreground: #18181b;
+    --primary: #18181b;
+    --primary-foreground: #fafafa;
+    --secondary: #f1f0ed;
+    --secondary-foreground: #18181b;
+    --muted: #f2f1ee;
+    --muted-foreground: #6c6a66;
+    --accent: #eceef1;
+    --accent-foreground: #0f172a;
+    --destructive: #dc2626;
+    --border: #e3e2de;
+    --input: #d6d5d0;
+    --ring: #A16207;
+    --well: #fafaf8;
+
+    --ok: #15803d;
+    --warn: #b45309;
+    --bad: #dc2626;
+    --unknown: #64748b;
+    --sky: #0369a1;
+    --accent-strong: #A16207;
+    /* The agent's own yellow, for the one control that spends a model call.
+       Measured against --bolt-ink at 8.9:1, so the label is readable rather
+       than merely legible. */
+    --bolt: #f5c518;
+    --bolt-ink: #3a2a00;
+    /* Two steps of elevation, both very quiet. A surface that casts no shadow
+       at all reads as a wireframe; one that casts a real drop shadow reads as
+       2014. These are just enough to lift an edge off the page. */
+    --elev-1: 0 1px 2px rgba(24, 20, 10, 0.04), 0 2px 8px -2px rgba(24, 20, 10, 0.06);
+    --elev-2: 0 2px 4px rgba(24, 20, 10, 0.05), 0 8px 20px -6px rgba(24, 20, 10, 0.1);
+    --dot: #dedcd6;
+
+    /* Devtron brand, used only by the official mark. Named as their
+       dashboard names them so the vendored SVG needs no edits. */
+    --B500: #0066cc;
+    --N900: #000a14;
+
+    /* The agent, day.
+       The face was #fdf3d4, which is 1.11:1 against a white card — visually
+       white, leaving only the outline to carry the character. Deepened until
+       the fill is actually a colour. */
+    --oakchu-face: #f8cf3c;
+    --oakchu-body: #e5ad16;
+    --oakchu-line: #3d2c0a;
+    --oakchu-eye: #ffffff;
+    --oakchu-accent: #A16207;
+    --oakchu-cowl: #2b3240;
+    --oakchu-cape: #3f2230;
+
+    color-scheme: light;
+}
+
+.dark {
+    --background: #020617;
+    --foreground: #f8fafc;
+    --card: #0e1223;
+    --card-foreground: #f8fafc;
+    --popover: #0e1223;
+    --popover-foreground: #f8fafc;
+    --primary: #f8fafc;
+    --primary-foreground: #0f172a;
+    --secondary: #1a1f33;
+    --secondary-foreground: #f8fafc;
+    --muted: #151a2b;
+    --muted-foreground: #94a3b8;
+    --accent: #172033;
+    --accent-foreground: #f8fafc;
+    --destructive: #f87171;
+    --border: #23293c;
+    --input: #334155;
+    --ring: #22c55e;
+    --well: #0a0e1c;
+
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --bad: #f87171;
+    --unknown: #94a3b8;
+    --sky: #38bdf8;
+    --accent-strong: #d9a441;
+    /* Night: pulled down a little so a saturated yellow does not glare on a
+       dark page, and the ink pulled darker to keep the contrast. */
+    --bolt: #f0bd15;
+    --bolt-ink: #2a1d00;
+    /* Night: a drop shadow on a dark page does nothing, so elevation is
+       carried by a light top edge instead of a cast shadow below. */
+    --elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 8px -2px rgba(0, 0, 0, 0.5);
+    --elev-2: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 10px 24px -8px rgba(0, 0, 0, 0.6);
+    --dot: #1b2136;
+
+    /* The wordmark's dark half has to lift off a dark page. */
+    --B500: #3b8fe4;
+    --N900: #e8edf2;
+
+    /* The agent mark, night: dimmer surfaces so it sits in the page rather than
+       glaring out of it, with the outline lifted to stay readable. */
+    --oakchu-face: #e8cf87;
+    --oakchu-body: #c9a447;
+    /* Lifted off pure black: at #241a05 the outline was 1.08:1 against the
+       dark page, so the silhouette dissolved into the background. */
+    --oakchu-line: #4a3a12;
+    --oakchu-eye: #fffdf6;
+    --oakchu-accent: #d9a441;
+    --oakchu-cowl: #4a5364;
+    --oakchu-cape: #4a2a3a;
+
+    color-scheme: dark;
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+
+    body {
+        @apply bg-background text-foreground;
+        font-family: var(--font-sans);
+        font-feature-settings: "cv05" 1, "ss01" 1;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    /* Anything machine-generated reads in the mono face with lining figures. */
+    code,
+    kbd,
+    samp,
+    pre {
+        font-family: var(--font-mono);
+        font-variant-ligatures: none;
+    }
+
+    /* Thin, unobtrusive scrollbars; the timeline scrolls a lot. */
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--border) transparent;
+    }
+
+    *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    *::-webkit-scrollbar-thumb {
+        background-color: var(--border);
+        border-radius: 999px;
+    }
+
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    button:not(:disabled),
+    [role="button"]:not([aria-disabled="true"]),
+    a[href] {
+        cursor: pointer;
+    }
+}
+
+@layer utilities {
+    /* Numeric columns line up when the digits are tabular. */
+    .tabular {
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+/*
+  Markdown. The analysis and the corrected root cause arrive as markdown and
+  must read like part of the product, not like a pasted README. Sized down from
+  browser defaults to match the surrounding density.
+*/
+.md {
+    @apply text-sm leading-relaxed text-foreground;
+}
+
+.md > *:first-child {
+    margin-top: 0;
+}
+
+.md > *:last-child {
+    margin-bottom: 0;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+    @apply mt-5 mb-2 font-semibold tracking-tight text-foreground;
+}
+
+.md h1 {
+    @apply text-base;
+}
+
+.md h2 {
+    @apply text-sm uppercase tracking-wide text-muted-foreground;
+}
+
+.md h3,
+.md h4 {
+    @apply text-sm;
+}
+
+.md p {
+    @apply my-2.5;
+}
+
+.md ul,
+.md ol {
+    @apply my-2.5 space-y-1 pl-5;
+}
+
+.md ul {
+    @apply list-disc;
+}
+
+.md ol {
+    @apply list-decimal;
+}
+
+.md li::marker {
+    @apply text-muted-foreground;
+}
+
+.md a {
+    @apply font-medium text-ok underline underline-offset-2 hover:opacity-80;
+}
+
+.md strong {
+    @apply font-semibold text-foreground;
+}
+
+.md code {
+    @apply rounded border border-border bg-well px-1 py-0.5 text-[0.8125rem];
+}
+
+.md pre {
+    @apply my-3 overflow-x-auto rounded-md border border-border bg-well p-3 text-xs leading-relaxed;
+}
+
+.md pre code {
+    @apply border-0 bg-transparent p-0 text-xs;
+}
+
+.md blockquote {
+    @apply my-3 border-l-2 border-border py-0.5 pl-3 text-muted-foreground;
+}
+
+.md hr {
+    @apply my-4 border-border;
+}
+
+.md table {
+    @apply my-3 w-full border-collapse text-xs;
+}
+
+.md th,
+.md td {
+    @apply border border-border px-2 py-1 text-left align-top;
+}
+
+.md th {
+    @apply bg-muted font-medium;
+}
+
+/* Compact variant, used inside remediation cards and claim rows. */
+.md-tight {
+    @apply text-[0.8125rem] leading-snug;
+}
+
+.md-tight p {
+    @apply my-1;
+}
+
+.md-tight ul,
+.md-tight ol {
+    @apply my-1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* --- agent motion -------------------------------------------------------
+   Kept small and slow on purpose. These run while an investigation is in
+   flight, which can be minutes, so anything faster becomes irritating. */
+
+@keyframes agent-orbit {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+@keyframes agent-pulse {
+    0%, 100% { opacity: 1;   transform: scale(1); }
+    50%      { opacity: 0.45; transform: scale(0.82); }
+}
+
+@keyframes agent-float {
+    0%, 100% { translate: 0 0; }
+    50%      { translate: 0 -3px; }
+}
+
+@keyframes agent-trace {
+    from { stroke-dashoffset: 120; }
+    to   { stroke-dashoffset: 0; }
+}
+
+/* A live step in the timeline: a short travelling highlight rather than a
+   spinner, so the eye can tell motion from a static coloured dot. */
+@keyframes agent-scan {
+    0%   { background-position: -120% 0; }
+    100% { background-position: 220% 0; }
+}
+
+.agent-scan {
+    background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        color-mix(in oklab, var(--sky) 16%, transparent) 45%,
+        transparent 90%
+    );
+    background-size: 60% 100%;
+    background-repeat: no-repeat;
+    animation: agent-scan 2.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .agent-scan,
+    [class*='animate-[agent-'] {
+        animation: none !important;
+    }
+}
+
+/* Keyboard focus must never land under the sticky top bar (h-12) or the
+   sticky run header beneath it. Without this, tabbing down a long run scrolls
+   the focused control behind them — WCAG 2.2 AA 2.4.11. */
+html {
+    scroll-padding-top: 8.5rem;
+    scroll-padding-bottom: 7rem;
+}
+
+/* Visible only once focused: the standard skip-link pattern. */
+.skip-link {
+    position: fixed;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 100;
+    transform: translateY(-200%);
+    transition: transform 150ms ease-out;
+}
+.skip-link:focus-visible { transform: translateY(0); }
+
+/* --- reimagined surface ------------------------------------------------- */
+
+/* Display face for headings and the wordmark; body stays Work Sans. */
+.font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+}
+
+h1, h2, h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+}
+
+/* The travelling border used on whichever stage is currently running.
+   offset-path walks the element around the rounded rect of its parent. */
+@keyframes border-beam {
+    to { offset-distance: 100%; }
+}
+
+/* Lenis needs the page to own its own scrolling. */
+html.lenis, html.lenis body { height: auto; }
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+.lenis.lenis-stopped { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+    [style*="border-beam"] { animation: none !important; }
+}
+
+
+/* One sweep of light across the AI trigger, on hover only. */
+@keyframes ai-sheen {
+    from { transform: translateX(0) skewX(-12deg); }
+    to { transform: translateX(400%) skewX(-12deg); }
+}
+
+/* The bolt, flickering the way a bolt does: mostly still, briefly bright. */
+@keyframes ai-spark {
+    0%, 82%, 100% { opacity: 1; transform: scale(1); }
+    86% { opacity: 0.55; transform: scale(0.94); }
+    90% { opacity: 1; transform: scale(1.1); }
+    94% { opacity: 0.8; transform: scale(1); }
+}
+
+/* The orb's ring, spun only while the pointer is on it. */
+@keyframes ai-swirl {
+    to { transform: rotate(360deg); }
+}
+
+/* One strike: the bolt jumps, brightens and settles. */
+@keyframes ai-strike {
+    0% { transform: scale(1) rotate(0deg); filter: brightness(1); }
+    30% { transform: scale(1.25) rotate(-8deg); filter: brightness(1.8); }
+    55% { transform: scale(0.95) rotate(5deg); }
+    100% { transform: scale(1) rotate(0deg); filter: brightness(1); }
+}
+
+/* The awareness ring: two arcs sweeping around the agent. */
+@keyframes agent-ring {
+    to { transform: rotate(360deg); }
+}
+
+/* Sparks lifting off, each on its own offset. */
+@keyframes agent-spark {
+    0%, 100% { opacity: 0; transform: translateY(2px) scale(0.6); }
+    25% { opacity: 0.9; transform: translateY(-2px) scale(1); }
+    55% { opacity: 0.9; transform: translateY(-4px) scale(1); }
+    80% { opacity: 0; transform: translateY(-8px) scale(0.7); }
+}
+
+/* The agent breathing. Two pixels over four and a half seconds — you should
+   never catch it moving, only notice that it is not frozen. */
+@keyframes agent-breathe {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50% { transform: translateY(-2.5px) scale(1.008); }
+}
+
+/* The inspector's cursor, nudging until someone uses it. Stops being a hint
+   and starts being a caption the moment it holds data, so it only runs while
+   idle. */
+@keyframes inspect-nudge {
+    0%, 70%, 100% { transform: translate(0, 0); }
+    78% { transform: translate(2px, 2px); }
+    86% { transform: translate(0, 0); }
+    92% { transform: translate(2px, 2px); }
+}

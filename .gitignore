@@ -20,3 +20,6 @@ internal/webui/dist/*
 
 # Local assistant notes
 CLAUDE.md
+
+# Local screen recordings
+asset/*.mov

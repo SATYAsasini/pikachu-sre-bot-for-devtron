@@ -1,0 +1,21 @@
+# Only sources reach the build; the UI and binary are built inside it.
+.git
+.github
+.idea
+.vscode
+.dev
+.env
+.env.*
+!.env.example
+config.yaml
+asset/
+bin/
+dist/
+hack/
+*.test
+*.out
+coverage.*
+web/node_modules
+web/dist
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep

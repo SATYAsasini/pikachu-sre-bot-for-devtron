@@ -27,6 +27,7 @@ export interface ChatTurn {
 }
 
 const KEY = 'sre.chat'
+const BUILD_KEY = 'sre.chat.build'
 
 /**
  * A conversation the browser owns.
@@ -52,6 +53,7 @@ export function useChat(clusterId: number | undefined, clusterName: string | und
   useEffect(() => {
     try {
       sessionStorage.setItem(KEY, JSON.stringify(turns))
+      sessionStorage.setItem(BUILD_KEY, __BUILD_ID__)
     } catch {
       // Private mode, or storage is full. The thread still works in memory;
       // it just will not survive a reload, which is the lesser loss.
@@ -66,6 +68,7 @@ export function useChat(clusterId: number | undefined, clusterName: string | und
     setBusy(false)
     try {
       sessionStorage.removeItem(KEY)
+      sessionStorage.removeItem(BUILD_KEY)
     } catch {
       /* nothing to clean up if it was never written */
     }
@@ -191,8 +194,23 @@ function handleFrame(
   }
 }
 
+/**
+ * The stored thread, but only if this build wrote it.
+ *
+ * A conversation survives a reload on purpose — losing an answer to a
+ * mistyped ⌘R is infuriating. It must not survive a *rebuild*: answers from
+ * older code sit above answers from newer code with nothing to distinguish
+ * them, which is indistinguishable from a fix that did not work. It has
+ * already cost one round of "why is this still broken" on a bug that was
+ * fixed.
+ */
 function load(): ChatTurn[] {
   try {
+    if (sessionStorage.getItem(BUILD_KEY) !== __BUILD_ID__) {
+      sessionStorage.removeItem(KEY)
+      sessionStorage.removeItem(BUILD_KEY)
+      return []
+    }
     const raw = sessionStorage.getItem(KEY)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)

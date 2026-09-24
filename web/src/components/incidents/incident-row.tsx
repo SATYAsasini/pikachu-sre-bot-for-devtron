@@ -4,17 +4,46 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, ChevronDown, Hand, RotateCcw, ShieldAlert } from 'lucide-react'
 import { cn } from 'cn'
 import { Button } from '@/components/ui/button'
+import { AiTrigger } from '@/components/agent/ai-trigger'
+import { DebugDialog } from '@/components/alerts/debug-dialog'
 import { Chip, Dot, type Tone } from '@/components/common/status'
 import { Text } from '@/components/common/text'
 import { Markdown } from '@/components/common/markdown'
 import { api, errorMessage } from '@/lib/api'
-import { qk } from '@/lib/queries'
+import { qk, useMonitoring } from '@/lib/queries'
+import { useStartRun } from '@/lib/use-start-run'
 import { relativeTime } from '@/lib/format'
 import { alertMeta } from '@/lib/alert-meta'
-import type { AlertLogEntry, AlertState, Priority, TrackedAlert } from '@/lib/types'
+import type { Alert, AlertLogEntry, AlertState, Priority, RunOptions, TrackedAlert } from '@/lib/types'
 
 const PRIORITY_TONE: Record<Priority, Tone> = { P0: 'bad', P1: 'warn', P2: 'neutral' }
 const STATE_TONE: Record<AlertState, Tone> = { firing: 'bad', acknowledged: 'warn', resolved: 'ok' }
+
+/**
+ * The tracked alert as the payload an investigation takes.
+ *
+ * Safe to rebuild rather than store: the server's dedup key is name,
+ * namespace and resource, all of which survive on the entity. So debugging
+ * from here lands on this same row instead of minting a second one.
+ */
+function asAlert(a: TrackedAlert): Alert {
+  return {
+    name: a.name,
+    state: a.state === 'resolved' ? 'resolved' : 'firing',
+    severity: a.severity ?? '',
+    summary: a.summary ?? '',
+    description: '',
+    labels: a.labels ?? null,
+    annotations: null,
+    startsAt: a.firstSeen,
+    fingerprint: a.dedupKey,
+    source: '',
+    expression: '',
+    namespace: a.namespace ?? '',
+    kind: a.kind ?? '',
+    resource: a.resource ?? '',
+  }
+}
 
 /**
  * One alert we own.
@@ -31,6 +60,12 @@ const STATE_TONE: Record<AlertState, Tone> = { firing: 'bad', acknowledged: 'war
 export function IncidentRow({ alert }: { alert: TrackedAlert }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
+  const [tuning, setTuning] = useState(false)
+
+  // Runs start from the alert's own cluster, not from whatever the top bar
+  // happens to be pointing at — the dashboard can list several.
+  const { start, pending: starting } = useStartRun()
+  const monitoring = useMonitoring(tuning ? alert.clusterId : undefined)
 
   const update = useMutation({
     mutationFn: (body: { state?: AlertState; notes?: string }) => api.updateIncident(alert.id, body),
@@ -162,6 +197,20 @@ export function IncidentRow({ alert }: { alert: TrackedAlert }) {
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          {/* An alert we own with nobody looking at it is the dead end this
+              list had: you could acknowledge it or close it, but the one
+              thing the product exists to do was only reachable from the live
+              feed it had already left. */}
+          {!resolved ? (
+            <AiTrigger
+              size="xs"
+              busy={starting}
+              onClick={() => setTuning(true)}
+              title={finding ? 'Investigate this again' : 'Investigate this alert'}
+            >
+              {finding ? 'Re-debug' : 'Debug'}
+            </AiTrigger>
+          ) : null}
           {alert.state === 'firing' ? (
             <Button
               size="xs"
@@ -202,6 +251,24 @@ export function IncidentRow({ alert }: { alert: TrackedAlert }) {
       </div>
 
       {open ? <Detail alert={alert} onNotes={(notes) => update.mutate({ notes })} saving={update.isPending} error={update.isError ? errorMessage(update.error) : undefined} /> : null}
+
+      <DebugDialog
+        alert={tuning ? asAlert(alert) : null}
+        clusterName={alert.clusterName}
+        open={tuning}
+        onOpenChange={(v) => !v && setTuning(false)}
+        busy={starting}
+        metricsAvailable={Boolean(monitoring.data?.metrics?.reachable)}
+        logsAvailable={Boolean(monitoring.data?.alerts?.reachable)}
+        onTrigger={(options: RunOptions) => {
+          setTuning(false)
+          start({
+            alert: asAlert(alert),
+            options,
+            cluster: { id: alert.clusterId, name: alert.clusterName },
+          })
+        }}
+      />
     </li>
   )
 }

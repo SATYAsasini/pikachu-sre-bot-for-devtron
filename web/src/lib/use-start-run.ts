@@ -31,24 +31,40 @@ export function useStartRun() {
   const track = useMutation({ mutationFn: api.trackAlert })
 
   const start = useCallback(
-    (trigger: { alert?: Alert; ask?: string; options?: RunOptions }) => {
-      if (!hasCluster(scope)) {
+    (trigger: {
+      alert?: Alert
+      ask?: string
+      options?: RunOptions
+      /**
+       * Where to run, when it is not wherever the top bar is pointing. An
+       * alert already on the dashboard carries its own cluster, and running
+       * it against the currently scoped one would file the result under the
+       * wrong entity.
+       */
+       cluster?: { id: number; name?: string }
+    }) => {
+      const clusterId = trigger.cluster?.id ?? (hasCluster(scope) ? scope.clusterId : 0)
+      const clusterName = trigger.cluster ? trigger.cluster.name : scope.clusterName
+      if (!clusterId) {
         toast.error('No cluster selected', { description: 'Runs need somewhere to look. Pick a cluster first.' })
         return
       }
+      // Narrowing only carries over when the run is going to the cluster the
+      // narrowing was chosen in.
+      const inScope = clusterId === scope.clusterId
 
       if (trigger.alert) {
         track.mutate(
           {
-            clusterId: scope.clusterId,
-            clusterName: scope.clusterName,
+            clusterId,
+            clusterName,
             alert: trigger.alert,
             investigate: true,
             options: trigger.options,
-            environmentId: scope.environmentId,
-            namespace: scope.namespace,
-            appName: scope.appName,
-            appType: scope.appType,
+            environmentId: inScope ? scope.environmentId : undefined,
+            namespace: inScope ? scope.namespace : undefined,
+            appName: inScope ? scope.appName : undefined,
+            appType: inScope ? scope.appType : undefined,
           },
           {
             onSuccess: (res) => {
@@ -73,12 +89,12 @@ export function useStartRun() {
 
       create.mutate(
         {
-          clusterId: scope.clusterId,
-          clusterName: scope.clusterName,
-          environmentId: scope.environmentId,
-          namespace: scope.namespace,
-          appName: scope.appName,
-          appType: scope.appType,
+          clusterId,
+          clusterName: clusterName ?? '',
+          environmentId: inScope ? scope.environmentId : undefined,
+          namespace: inScope ? scope.namespace : undefined,
+          appName: inScope ? scope.appName : undefined,
+          appType: inScope ? scope.appType : undefined,
           alert: null,
           ask: trigger.ask ?? '',
           options: trigger.options,

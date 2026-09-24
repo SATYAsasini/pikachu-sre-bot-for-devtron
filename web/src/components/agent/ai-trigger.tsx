@@ -35,7 +35,8 @@ export function AiTrigger({
   disabled?: boolean
   /** A run is already starting. Keeps the label, stills the bolt. */
   busy?: boolean
-  size?: 'sm' | 'md'
+  /** `xs` matches the 24px row buttons on the alert list. */
+  size?: 'xs' | 'sm' | 'md'
   /**
    * `orb` is the round send control that lives inside the ask box. A labelled
    * pill there had to be wide enough to read, which pushed it onto the
@@ -70,7 +71,7 @@ export function AiTrigger({
         'group relative inline-flex shrink-0 items-center gap-1.5 rounded-lg font-semibold whitespace-nowrap',
         'transition-[transform,box-shadow,filter] duration-150 ease-out',
         'focus-visible:ring-[3px] focus-visible:ring-bolt/50 focus-visible:outline-none',
-        size === 'sm' ? 'h-7 px-2.5 text-xs' : 'h-9 px-3.5 text-sm',
+        size === 'xs' ? 'h-6 gap-1 px-2 text-xs' : size === 'sm' ? 'h-7 px-2.5 text-xs' : 'h-9 px-3.5 text-sm',
         // The raise. A light top edge, a dark bottom edge and a cast shadow —
         // three declarations, no images.
         'bg-bolt text-bolt-ink',
@@ -88,7 +89,7 @@ export function AiTrigger({
         className,
       )}
     >
-      <Bolt busy={busy || disabled} className={size === 'sm' ? 'size-3.5' : 'size-4'} />
+      <Bolt busy={busy || disabled} className={size === 'md' ? 'size-4' : 'size-3.5'} />
       <span>{children}</span>
 
       {/* A single sweep of light across the face. Purely decorative, so it is

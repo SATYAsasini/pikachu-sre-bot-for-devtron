@@ -82,6 +82,19 @@ func run() error {
 	})
 	discoverer := devtron.NewDiscoverer(dc, 15*time.Minute)
 
+	// Discovery still finds every candidate. This only says which of the ones
+	// it found to use, for the clusters where more than one answers — and the
+	// lookup is a function rather than a snapshot so a choice saved in the UI
+	// takes effect on the next walk without a restart.
+	discoverer.Overrides = func(ctx context.Context, clusterID int) devtron.Choice {
+		c, err := store.LoadMonitoringChoice(ctx, clusterID)
+		if err != nil {
+			logger.Warn("could not read the monitoring choice", "cluster", clusterID, "err", err)
+			return devtron.Choice{}
+		}
+		return c
+	}
+
 	// Settings saved from the UI outrank the environment, which is only the
 	// bootstrap path. Without either, the service still starts so the
 	// settings screen is reachable.

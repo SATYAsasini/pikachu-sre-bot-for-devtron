@@ -1,4 +1,5 @@
-import { BellRing, Gauge, Info } from 'lucide-react'
+import { BellRing, Gauge, Info, SlidersHorizontal } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
 import { Panel, PanelBody, PanelHeader } from '@/components/common/panel'
 import { Chip, Unknown } from '@/components/common/status'
 import { Mono } from '@/components/common/mono'
@@ -6,7 +7,7 @@ import { ErrorState } from '@/components/common/error-state'
 import { TextSkeleton } from '@/components/common/skeletons'
 import { relativeTime } from '@/lib/format'
 import { useMonitoring } from '@/lib/queries'
-import type { MonitoringEndpoint } from '@/lib/types'
+import { monitoringHalf, type MonitoringEndpoint, type MonitoringStack } from '@/lib/types'
 
 /**
  * What the agent can actually see in this cluster.
@@ -23,7 +24,7 @@ export function MonitoringPanel({ clusterId }: { clusterId?: number }) {
       <PanelHeader
         icon={<Gauge aria-hidden className="size-3.5" />}
         title="What the agent can see here"
-        description="Discovered per cluster, never configured."
+        description="Discovered per cluster. Where more than one answers, you choose."
         actions={q.data ? <span className="text-[0.6875rem] text-muted-foreground">{relativeTime(q.data.discoveredAt)}</span> : null}
       />
       <PanelBody className="space-y-2">
@@ -37,6 +38,7 @@ export function MonitoringPanel({ clusterId }: { clusterId?: number }) {
           <>
             <EndpointRow kind="metrics" icon={<Gauge aria-hidden className="size-3.5" />} endpoint={q.data.metrics} />
             <EndpointRow kind="alerts" icon={<BellRing aria-hidden className="size-3.5" />} endpoint={q.data.alerts} />
+            <Alternatives stack={q.data} />
             {(q.data.notes ?? []).length > 0 ? (
               <ul className="mt-2 space-y-1 border-t border-border pt-2">
                 {(q.data.notes ?? []).map((note, i) => (
@@ -51,6 +53,51 @@ export function MonitoringPanel({ clusterId }: { clusterId?: number }) {
         ) : null}
       </PanelBody>
     </Panel>
+  )
+}
+
+/**
+ * A cluster with two Alertmanagers is not a cluster with one.
+ *
+ * Discovery picks between them by name heuristic and says nothing about it,
+ * which is fine right up until it picks the wrong one. Whenever there is more
+ * than one way this could have gone, say so and offer the screen where it can
+ * be settled.
+ */
+function Alternatives({ stack }: { stack: MonitoringStack }) {
+  // Candidates, not answers. A normal walk stops probing a half as soon as it
+  // has one, so counting only the reachable ones here would report "just the
+  // one" on exactly the clusters where the others were never tried.
+  const found = (half: 'metrics' | 'alerts') =>
+    (stack.candidates ?? []).filter((c) => !c.scrapeTarget && monitoringHalf(c) === half).length
+
+  const counts = [
+    ['alert source', found('alerts')],
+    ['metrics backend', found('metrics')],
+  ] as const
+  const plural = counts.filter(([, n]) => n > 1)
+  if (plural.length === 0 && !stack.partial) return null
+
+  return (
+    <div className="mt-1 space-y-1 border-t border-border pt-2">
+      {stack.partial ? (
+        <p className="text-[0.6875rem] leading-relaxed text-warn">
+          Discovery did not finish, so this is what was measured before time ran out — not the whole picture.
+        </p>
+      ) : null}
+      {plural.map(([what, n]) => (
+        <p key={what} className="text-[0.6875rem] leading-relaxed text-muted-foreground">
+          {n} candidate {what}s in this cluster. One was chosen for you.
+        </p>
+      ))}
+      <Link
+        to="/clusters"
+        className="inline-flex items-center gap-1 text-[0.6875rem] font-medium text-foreground underline decoration-dotted underline-offset-4"
+      >
+        <SlidersHorizontal aria-hidden className="size-3" />
+        Choose which to use
+      </Link>
+    </div>
   )
 }
 
@@ -91,6 +138,7 @@ function EndpointRow({
       <Chip tone="neutral" mono>
         {endpoint.flavor}
       </Chip>
+      {endpoint.chosen ? <Chip tone="accent">pinned</Chip> : null}
       <Mono
         className="max-w-[16rem] flex-1"
         value={`${endpoint.service.namespace}/${endpoint.service.name}${endpoint.service.port ? `:${endpoint.service.port}` : ''}${endpoint.apiBase}`}

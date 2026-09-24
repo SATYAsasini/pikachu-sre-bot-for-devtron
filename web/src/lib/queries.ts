@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { CreateRunRequest, Run, RunStatus } from '@/lib/types'
+import type { CreateRunRequest, MonitoringPick, MonitoringStack, Run, RunStatus } from '@/lib/types'
 
 export const qk = {
   health: ['health'] as const,
@@ -13,6 +13,7 @@ export const qk = {
   clusters: ['clusters'] as const,
   environments: (clusterId?: number) => ['environments', clusterId ?? 'all'] as const,
   monitoring: (clusterId: number) => ['monitoring', clusterId] as const,
+  monitoringProbe: (clusterId: number) => ['monitoring', clusterId, 'probe-all'] as const,
   apps: (environmentId?: number, search?: string) => ['apps', environmentId ?? 'all', search ?? ''] as const,
   helmApps: (clusterId?: number, environmentId?: number, search?: string) =>
     ['helm-apps', clusterId ?? 'all', environmentId ?? 'all', search ?? ''] as const,
@@ -54,6 +55,54 @@ export function useMonitoring(clusterId?: number) {
     staleTime: 60_000,
     retry: false,
   })
+}
+
+/**
+ * Every candidate measured, not just enough of them to answer.
+ *
+ * Separate query key from useMonitoring on purpose: this one is slow and only
+ * the cluster's monitoring screen wants it, and folding it into the cheap one
+ * would make every page that shows "what can the agent see here" pay for a
+ * full probe of a dozen exporters.
+ */
+export function useMonitoringProbe(clusterId?: number, enabled = true) {
+  return useQuery({
+    queryKey: qk.monitoringProbe(clusterId ?? -1),
+    queryFn: () => api.monitoring(clusterId as number, true),
+    enabled: enabled && clusterId !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+/**
+ * Pin the endpoints this cluster uses, or hand it back to discovery.
+ *
+ * Both write paths return the freshly re-probed stack, so the answer that
+ * lands in the cache is one measured under the choice that was just made
+ * rather than the one it replaced.
+ */
+export function useChooseMonitoring(clusterId?: number, clusterName?: string) {
+  const qc = useQueryClient()
+  const settle = (stack: MonitoringStack) => {
+    if (clusterId === undefined) return
+    qc.setQueryData(qk.monitoringProbe(clusterId), stack)
+    qc.setQueryData(qk.monitoring(clusterId), stack)
+    // The alert list is downstream of which source it was read from.
+    void qc.invalidateQueries({ queryKey: ['alerts'] })
+    void qc.invalidateQueries({ queryKey: ['rules'] })
+  }
+  return {
+    choose: useMutation({
+      mutationFn: (body: { metrics: MonitoringPick | null; alerts: MonitoringPick | null }) =>
+        api.chooseMonitoring(clusterId as number, { ...body, clusterName }),
+      onSuccess: settle,
+    }),
+    reset: useMutation({
+      mutationFn: () => api.resetMonitoring(clusterId as number),
+      onSuccess: settle,
+    }),
+  }
 }
 
 export function useApps(environmentId?: number, search?: string, enabled = true) {

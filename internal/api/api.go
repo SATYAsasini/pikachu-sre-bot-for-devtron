@@ -68,6 +68,11 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/clusters/refresh", s.refreshClusters)
 		r.Get("/clusters/{clusterId}/environments", s.listClusterEnvironments)
 		r.Get("/clusters/{clusterId}/monitoring", s.clusterMonitoring)
+		// Discovery picks by heuristic, and on a cluster running both vmalert
+		// and an Alertmanager the heuristic is a coin toss. These let the
+		// operator settle it; DELETE puts the cluster back on discovery.
+		r.Put("/clusters/{clusterId}/monitoring", s.chooseClusterMonitoring)
+		r.Delete("/clusters/{clusterId}/monitoring", s.resetClusterMonitoring)
 		r.Get("/environments", s.listEnvironments)
 		r.Get("/apps", s.listApps)
 		r.Get("/helm-apps", s.listHelmApps)
@@ -170,12 +175,23 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 		writeDevtronError(w, err)
 		return
 	}
+	// One query for the whole list rather than one per card, so the cluster
+	// picker can say which clusters have a pinned monitoring stack without
+	// starting a discovery walk against every one of them.
+	pinned, err := s.Runs.Store.PinnedMonitoringClusters(r.Context())
+	if err != nil {
+		pinned = map[int]bool{}
+	}
+
 	out := make([]map[string]any, 0, len(cs))
 	for _, c := range cs {
 		row := map[string]any{
 			"id": c.ID, "clusterName": c.ClusterName,
 			"serverUrl": c.ServerURL, "isVirtualCluster": c.IsVirtual,
 			"errorInConnecting": c.ErrorInCx,
+		}
+		if pinned[c.ID] {
+			row["monitoringPinned"] = true
 		}
 		// The measurement rides along, so the setup screen and the picker read
 		// the same row rather than each fetching its own idea of the truth.
@@ -225,17 +241,96 @@ func (s *Server) clusterMonitoring(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_cluster_id", err.Error())
 		return
 	}
-	name := r.URL.Query().Get("clusterName")
-	if r.URL.Query().Get("refresh") == "true" {
-		s.Discoverer.Invalidate(id)
+	q := r.URL.Query()
+	name := q.Get("clusterName")
+
+	// ?probe=all measures every candidate rather than stopping at the first
+	// that answers. It is what the cluster's monitoring screen asks for:
+	// choosing between endpoints means seeing all of them, and "never asked"
+	// is not a useful thing to show somebody who is being asked to pick.
+	var stack *devtron.MonitoringStack
+	if q.Get("probe") == "all" {
+		stack, err = s.Discoverer.Probe(r.Context(), id, name)
+	} else {
+		if q.Get("refresh") == "true" {
+			s.Discoverer.Invalidate(id)
+		}
+		stack, err = s.Discoverer.Get(r.Context(), id, name)
 	}
-	stack, err := s.Discoverer.Get(r.Context(), id, name)
 	if err != nil {
 		writeDevtronError(w, err)
 		return
 	}
 	// Candidates are already on the stack; they matter to the UI because
 	// discovery picks one of them by name heuristics and can pick wrong.
+	writeJSON(w, http.StatusOK, stack)
+}
+
+// chooseClusterMonitoring pins which discovered endpoints a cluster uses.
+//
+// Only a Service discovery has already reported can be pinned. That is the
+// line this keeps: the operator settles a choice between measured options,
+// they do not get to type in an address, and a pin that stops resolving falls
+// back to discovery with a note rather than silently.
+func (s *Server) chooseClusterMonitoring(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "clusterId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cluster_id", err.Error())
+		return
+	}
+	var body struct {
+		ClusterName string        `json:"clusterName"`
+		Metrics     *devtron.Pick `json:"metrics"`
+		Alerts      *devtron.Pick `json:"alerts"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_body", err.Error())
+		return
+	}
+	choice := devtron.Choice{Metrics: body.Metrics, Alerts: body.Alerts}
+	if choice.Metrics != nil && !choice.Metrics.Valid() {
+		writeError(w, http.StatusBadRequest, "bad_pick", "a metrics pick needs a namespace and a name")
+		return
+	}
+	if choice.Alerts != nil && !choice.Alerts.Valid() {
+		writeError(w, http.StatusBadRequest, "bad_pick", "an alert source pick needs a namespace and a name")
+		return
+	}
+
+	if err := s.Runs.Store.SaveMonitoringChoice(r.Context(), id, body.ClusterName, choice, "ui"); err != nil {
+		writeError(w, http.StatusInternalServerError, "save_failed", err.Error())
+		return
+	}
+	// The cached stack was measured under the old choice, so it is now a
+	// statement about a decision nobody is making any more.
+	s.Discoverer.Invalidate(id)
+
+	stack, err := s.Discoverer.Probe(r.Context(), id, body.ClusterName)
+	if err != nil {
+		writeDevtronError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stack)
+}
+
+// resetClusterMonitoring drops the pins and goes back to discovery.
+func (s *Server) resetClusterMonitoring(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "clusterId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cluster_id", err.Error())
+		return
+	}
+	if err := s.Runs.Store.ClearMonitoringChoice(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "save_failed", err.Error())
+		return
+	}
+	s.Discoverer.Invalidate(id)
+
+	stack, err := s.Discoverer.Probe(r.Context(), id, r.URL.Query().Get("clusterName"))
+	if err != nil {
+		writeDevtronError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, stack)
 }
 
@@ -400,7 +495,7 @@ func orEmpty[T any](s []T) []T {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

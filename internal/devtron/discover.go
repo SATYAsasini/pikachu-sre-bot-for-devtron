@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 // Flavor names a monitoring backend.
@@ -25,6 +29,29 @@ const (
 	FlavorUnknown         Flavor = "unknown"
 )
 
+// The budgets a walk runs under.
+//
+// These exist because discovery used to be unbounded and serial: on a real
+// cluster with two dozen matching Services it took twenty-odd seconds, which
+// is longer than most of its callers were prepared to wait. What made that a
+// bug rather than a slow path is that the half-finished answer was then
+// cached and served to everybody as fact.
+const (
+	// DiscoveryBudget caps one whole walk, however many candidates there are.
+	DiscoveryBudget = 45 * time.Second
+	// candidateBudget caps everything spent on one candidate: every API base
+	// and every port retry together, not each.
+	candidateBudget = 12 * time.Second
+	// probeTimeout caps a single HTTP attempt.
+	probeTimeout = 4 * time.Second
+	// probeParallel is how many candidates are in flight at once. One dead
+	// Service must not hold up the queue behind it.
+	probeParallel = 6
+	// maxPortRetries caps the portless-then-each-port fallback. A Service
+	// advertising six ports is not worth thirty seconds.
+	maxPortRetries = 3
+)
+
 // Endpoint is a discovered monitoring service and the API base that answered.
 type Endpoint struct {
 	Flavor  Flavor     `json:"flavor"`
@@ -38,12 +65,63 @@ type Endpoint struct {
 	Ports     []string `json:"ports,omitempty"`
 	Reachable bool     `json:"reachable"`
 	Detail    string   `json:"detail,omitempty"`
+	// Probed records whether this candidate was actually tried. A walk stops
+	// as soon as a half is satisfied, so "did not answer" and "was never
+	// asked" are different facts and a picker must not draw them alike.
+	Probed bool `json:"probed"`
+	// ScrapeTarget marks a Service that carries a discovery keyword in its
+	// name but exposes /metrics for something else to scrape rather than a
+	// query API of its own — a node exporter, kube-state-metrics, Grafana.
+	// They are kept as candidates, and skipped unless asked for.
+	ScrapeTarget bool `json:"scrapeTarget,omitempty"`
+	// Chosen marks the endpoint the operator pinned, as opposed to the one
+	// the heuristic would have landed on.
+	Chosen bool `json:"chosen,omitempty"`
 }
 
 // Path joins the API base with an API path.
 func (e *Endpoint) Path(p string) string {
 	return strings.TrimRight(e.APIBase, "/") + "/" + strings.TrimLeft(p, "/")
 }
+
+// IsAlertSource reports whether this endpoint belongs to the alerting half.
+func (e *Endpoint) IsAlertSource() bool { return isAlertFlavor(e.Flavor) }
+
+func isAlertFlavor(f Flavor) bool { return f == FlavorAlertmanager || f == FlavorVMAlert }
+
+// Pick identifies one Service the operator chose to use.
+//
+// Namespace and name only. The flavor, the port and the API base are things
+// discovery measures rather than things anybody should have to type, and
+// pinning them would mean a chart upgrade that moved a port silently broke
+// the choice.
+type Pick struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+}
+
+// String renders the pick the way it is shown on screen.
+func (p Pick) String() string { return p.Namespace + "/" + p.Name }
+
+// Valid reports whether the pick names something.
+func (p Pick) Valid() bool { return p.Namespace != "" && p.Name != "" }
+
+func (p Pick) matches(e *Endpoint) bool {
+	return e.Service.Namespace == p.Namespace && e.Service.Name == p.Name
+}
+
+// Choice is the operator's per-cluster override of what discovery would pick.
+//
+// Discovery still finds everything; this only says which of the things it
+// found to use. Neither half has to be set, and an unset half means "whatever
+// you would have chosen".
+type Choice struct {
+	Metrics *Pick `json:"metrics,omitempty"`
+	Alerts  *Pick `json:"alerts,omitempty"`
+}
+
+// Empty reports a choice that overrides nothing.
+func (c Choice) Empty() bool { return c.Metrics == nil && c.Alerts == nil }
 
 // MonitoringStack is what a cluster has available for metrics and alerts.
 // Either half can be missing, and a missing half is a fact the agent must
@@ -54,10 +132,20 @@ type MonitoringStack struct {
 	Metrics     *Endpoint `json:"metrics,omitempty"`
 	Alerts      *Endpoint `json:"alerts,omitempty"`
 	// Candidates is everything that looked like a monitoring service,
-	// including what did not answer. Useful when discovery gets it wrong.
-	Candidates   []Endpoint `json:"candidates,omitempty"`
-	DiscoveredAt time.Time  `json:"discoveredAt"`
-	Notes        []string   `json:"notes,omitempty"`
+	// including what did not answer and what was never tried. This is what
+	// the cluster's monitoring picker is built from.
+	Candidates []Endpoint `json:"candidates,omitempty"`
+	// Chosen is the operator's override, echoed back so the UI can tell a
+	// pinned endpoint from a guessed one.
+	Chosen       Choice    `json:"chosen,omitzero"`
+	DiscoveredAt time.Time `json:"discoveredAt"`
+	// Partial marks a walk that ran out of budget or was cancelled. A partial
+	// answer is never cached: it is the difference between "this cluster has
+	// no alert source" and "we did not get far enough to find one", and
+	// serving the first when the second is true is the failure this whole
+	// service exists to prevent.
+	Partial bool     `json:"partial,omitempty"`
+	Notes   []string `json:"notes,omitempty"`
 }
 
 // HasMetrics reports a usable query endpoint.
@@ -75,16 +163,25 @@ func (m *MonitoringStack) Summary() string {
 	}
 	parts := []string{}
 	if m.HasMetrics() {
-		parts = append(parts, fmt.Sprintf("metrics=%s (%s/%s)", m.Metrics.Flavor, m.Metrics.Service.Namespace, m.Metrics.Service.Name))
+		parts = append(parts, fmt.Sprintf("metrics=%s (%s/%s)%s", m.Metrics.Flavor,
+			m.Metrics.Service.Namespace, m.Metrics.Service.Name, pinnedSuffix(m.Metrics)))
 	} else {
 		parts = append(parts, "metrics=none")
 	}
 	if m.HasAlerts() {
-		parts = append(parts, fmt.Sprintf("alerts=%s (%s/%s)", m.Alerts.Flavor, m.Alerts.Service.Namespace, m.Alerts.Service.Name))
+		parts = append(parts, fmt.Sprintf("alerts=%s (%s/%s)%s", m.Alerts.Flavor,
+			m.Alerts.Service.Namespace, m.Alerts.Service.Name, pinnedSuffix(m.Alerts)))
 	} else {
 		parts = append(parts, "alerts=none")
 	}
 	return strings.Join(parts, ", ")
+}
+
+func pinnedSuffix(e *Endpoint) string {
+	if e != nil && e.Chosen {
+		return " [chosen]"
+	}
+	return ""
 }
 
 // discoveryCEL matches any Service whose name looks like part of a metrics or
@@ -105,8 +202,18 @@ type Discoverer struct {
 	c   *Client
 	ttl time.Duration
 
+	// Overrides returns the operator's pinned endpoints for a cluster. Nil
+	// means nothing is pinned anywhere, which is the state a fresh install
+	// is in and the state most installations stay in.
+	Overrides func(ctx context.Context, clusterID int) Choice
+
 	mu    sync.Mutex
 	cache map[int]*MonitoringStack
+
+	// flights collapses concurrent misses. The dashboard asks for the stack
+	// from four places at once on first paint, and four identical walks is
+	// four times the load on the orchestrator for one answer.
+	flights singleflight.Group
 }
 
 // NewDiscoverer builds a discoverer. A 15 minute TTL is long enough that a
@@ -120,22 +227,83 @@ func NewDiscoverer(c *Client, ttl time.Duration) *Discoverer {
 
 // Get returns the cluster's monitoring stack, discovering it when the cached
 // answer is missing or stale.
+//
+// The walk itself is detached from the caller's context and given its own
+// budget. A browser tab that navigates away used to cancel discovery
+// mid-probe and leave the half-finished result in the cache for the next
+// fifteen minutes, which every reader downstream then reported as "no alert
+// source in this cluster". The caller can still give up early — it just no
+// longer takes the answer down with it.
 func (d *Discoverer) Get(ctx context.Context, clusterID int, clusterName string) (*MonitoringStack, error) {
-	d.mu.Lock()
-	if m, ok := d.cache[clusterID]; ok && time.Since(m.DiscoveredAt) < d.ttl {
-		d.mu.Unlock()
+	if m := d.cached(clusterID); m != nil {
 		return m, nil
 	}
-	d.mu.Unlock()
+	return d.run(ctx, clusterID, clusterName, false)
+}
 
-	m, err := d.discover(ctx, clusterID, clusterName)
-	if err != nil {
-		return nil, err
+// Probe re-measures every candidate, including the ones a normal walk skips
+// once it has an answer, and replaces the cached stack with the result.
+//
+// This is what the cluster's monitoring screen calls. Choosing between
+// endpoints means seeing all of them, and "never asked" is not a useful thing
+// to show somebody who is being asked to pick.
+func (d *Discoverer) Probe(ctx context.Context, clusterID int, clusterName string) (*MonitoringStack, error) {
+	d.Invalidate(clusterID)
+	return d.run(ctx, clusterID, clusterName, true)
+}
+
+func (d *Discoverer) run(ctx context.Context, clusterID int, clusterName string, full bool) (*MonitoringStack, error) {
+	key := strconv.Itoa(clusterID)
+	if full {
+		key += ":full"
 	}
+	ch := d.flights.DoChan(key, func() (any, error) {
+		// Another flight may have finished and filled the cache while this
+		// one queued.
+		if !full {
+			if m := d.cached(clusterID); m != nil {
+				return m, nil
+			}
+		}
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), DiscoveryBudget)
+		defer cancel()
+
+		m, err := d.discover(bg, clusterID, clusterName, full)
+		if err != nil {
+			return nil, err
+		}
+		if !m.Partial {
+			d.store(clusterID, m)
+		}
+		return m, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		// The caller gave up. The walk carries on and warms the cache for
+		// whoever asks next.
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*MonitoringStack), nil
+	}
+}
+
+func (d *Discoverer) cached(clusterID int) *MonitoringStack {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if m, ok := d.cache[clusterID]; ok && time.Since(m.DiscoveredAt) < d.ttl {
+		return m
+	}
+	return nil
+}
+
+func (d *Discoverer) store(clusterID int, m *MonitoringStack) {
 	d.mu.Lock()
 	d.cache[clusterID] = m
 	d.mu.Unlock()
-	return m, nil
 }
 
 // InvalidateAll drops every cached stack, which is what must happen when the
@@ -153,7 +321,7 @@ func (d *Discoverer) Invalidate(clusterID int) {
 	d.mu.Unlock()
 }
 
-func (d *Discoverer) discover(ctx context.Context, clusterID int, clusterName string) (*MonitoringStack, error) {
+func (d *Discoverer) discover(ctx context.Context, clusterID int, clusterName string, full bool) (*MonitoringStack, error) {
 	out := &MonitoringStack{ClusterID: clusterID, ClusterName: clusterName, DiscoveredAt: time.Now()}
 
 	list, err := d.c.ListResources(ctx, ResourceQuery{
@@ -163,6 +331,7 @@ func (d *Discoverer) discover(ctx context.Context, clusterID int, clusterName st
 	})
 	if err != nil {
 		out.Notes = append(out.Notes, "service discovery failed: "+err.Error())
+		out.Partial = ctx.Err() != nil
 		return out, nil
 	}
 	cands := classify(list.Objects)
@@ -170,29 +339,194 @@ func (d *Discoverer) discover(ctx context.Context, clusterID int, clusterName st
 		out.Notes = append(out.Notes, "no Prometheus, VictoriaMetrics, Alertmanager or vmalert Service found in this cluster")
 		return out, nil
 	}
-
-	// Probe metrics candidates best-first and keep the first that answers.
-	for i := range cands {
-		e := &cands[i]
-		switch e.Flavor {
-		case FlavorPrometheus, FlavorVictoriaMetrics, FlavorThanos, FlavorMimir:
-			if d.probeMetrics(ctx, clusterID, e) && out.Metrics == nil {
-				out.Metrics = e
-			}
-		case FlavorAlertmanager, FlavorVMAlert:
-			if d.probeAlerts(ctx, clusterID, e) && out.Alerts == nil {
-				out.Alerts = e
-			}
-		}
-	}
 	out.Candidates = cands
+
+	metrics, alerts := halves(cands, full)
+
+	// A pinned endpoint is resolved first and on its own. If the operator has
+	// said which alert source to use, spending the budget probing seventeen
+	// others to arrive at a different one is worse than pointless.
+	if d.Overrides != nil {
+		out.Chosen = d.Overrides(ctx, clusterID)
+	}
+	pinnedMetrics := d.resolvePin(ctx, clusterID, out, cands, out.Chosen.Metrics, false)
+	pinnedAlerts := d.resolvePin(ctx, clusterID, out, cands, out.Chosen.Alerts, true)
+
+	// A pin settles its half, so the rest of that half is not worth probing
+	// — except during a full probe, which is the picker asking. Somebody
+	// deciding whether to keep a pin needs to see whether the alternatives
+	// answer, and "not probed" beside every one of them is no help at all.
+	metrics = without(metrics, pinnedMetrics, cands)
+	alerts = without(alerts, pinnedAlerts, cands)
+	probeMetricsHalf := pinnedMetrics == nil || full
+	probeAlertsHalf := pinnedAlerts == nil || full
+
+	// The two halves are probed at the same time. They used to share one
+	// serial queue ordered by name, so on a cluster with a dozen exporters
+	// the alert sources were seventeenth and nineteenth in line and the
+	// budget was gone before either was reached.
+	var wg sync.WaitGroup
+	if probeMetricsHalf {
+		wg.Add(1)
+		go func() { defer wg.Done(); d.probeHalf(ctx, clusterID, cands, metrics, full) }()
+	}
+	if probeAlertsHalf {
+		wg.Add(1)
+		go func() { defer wg.Done(); d.probeHalf(ctx, clusterID, cands, alerts, full) }()
+	}
+	wg.Wait()
+
+	out.Metrics = pinnedMetrics
+	if out.Metrics == nil {
+		out.Metrics = firstReachable(cands, metrics)
+	}
+	out.Alerts = pinnedAlerts
+	if out.Alerts == nil {
+		out.Alerts = firstReachable(cands, alerts)
+	}
+
 	if out.Metrics == nil {
 		out.Notes = append(out.Notes, "a metrics Service was found but none answered a query; coverage is unknown, not healthy")
 	}
 	if out.Alerts == nil {
 		out.Notes = append(out.Notes, "no alert source answered; firing alerts cannot be listed for this cluster")
 	}
+	if ctx.Err() != nil {
+		out.Partial = true
+		out.Notes = append(out.Notes,
+			"discovery ran out of time before it finished; this answer is incomplete and will be retried rather than cached")
+	}
 	return out, nil
+}
+
+// resolvePin finds the candidate the operator pinned and measures it.
+//
+// A pinned endpoint is used even when it does not answer. Being told the
+// Alertmanager you chose is down is the truth; being quietly moved onto a
+// different one is how somebody ends up reading another cluster's alerts and
+// believing they are their own.
+func (d *Discoverer) resolvePin(ctx context.Context, clusterID int, out *MonitoringStack,
+	cands []Endpoint, pick *Pick, wantAlerts bool,
+) *Endpoint {
+	if pick == nil || !pick.Valid() {
+		return nil
+	}
+	half := "metrics"
+	if wantAlerts {
+		half = "alert source"
+	}
+	for i := range cands {
+		e := &cands[i]
+		if !pick.matches(e) || e.IsAlertSource() != wantAlerts {
+			continue
+		}
+		e.Chosen = true
+		d.probe(ctx, clusterID, e)
+		if !e.Reachable {
+			out.Notes = append(out.Notes, fmt.Sprintf(
+				"the chosen %s %s did not answer; it is still the one in use, so this cluster reports nothing rather than reporting somebody else's data",
+				half, pick))
+		}
+		return e
+	}
+	out.Notes = append(out.Notes, fmt.Sprintf(
+		"the chosen %s %s is no longer a Service in this cluster; falling back to discovery", half, pick))
+	return nil
+}
+
+// without drops the pinned candidate from a half's queue, so a full probe
+// measures the alternatives without measuring the pin twice.
+func without(idx []int, pinned *Endpoint, cands []Endpoint) []int {
+	if pinned == nil {
+		return idx
+	}
+	out := idx[:0:0]
+	for _, i := range idx {
+		if &cands[i] != pinned {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// halves splits the candidate indexes into the metrics queue and the alert
+// queue, dropping scrape targets unless every candidate was asked for.
+func halves(cands []Endpoint, full bool) (metrics, alerts []int) {
+	for i := range cands {
+		if cands[i].ScrapeTarget && !full {
+			continue
+		}
+		if cands[i].IsAlertSource() {
+			alerts = append(alerts, i)
+		} else {
+			metrics = append(metrics, i)
+		}
+	}
+	return metrics, alerts
+}
+
+// probeHalf measures one half's candidates in rank order, several at a time,
+// and stops launching new ones once a better-ranked candidate has answered.
+func (d *Discoverer) probeHalf(ctx context.Context, clusterID int, cands []Endpoint, idx []int, full bool) {
+	if len(idx) == 0 {
+		return
+	}
+	var (
+		mu   sync.Mutex
+		best = -1 // rank position of the best candidate that has answered
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(probeParallel)
+
+	for pos, i := range idx {
+		if gctx.Err() != nil {
+			break
+		}
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return nil
+			}
+			if !full {
+				mu.Lock()
+				settled := best >= 0 && best < pos
+				mu.Unlock()
+				if settled {
+					return nil
+				}
+			}
+			if d.probe(gctx, clusterID, &cands[i]) {
+				mu.Lock()
+				if best < 0 || pos < best {
+					best = pos
+				}
+				mu.Unlock()
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
+// firstReachable returns the best-ranked candidate in this half that answered.
+func firstReachable(cands []Endpoint, idx []int) *Endpoint {
+	for _, i := range idx {
+		if cands[i].Reachable {
+			return &cands[i]
+		}
+	}
+	return nil
+}
+
+// probe measures one candidate, whichever half it belongs to.
+func (d *Discoverer) probe(ctx context.Context, clusterID int, e *Endpoint) bool {
+	ctx, cancel := context.WithTimeout(ctx, candidateBudget)
+	defer cancel()
+
+	e.Probed = true
+	if e.IsAlertSource() {
+		return d.probeAlerts(ctx, clusterID, e)
+	}
+	return d.probeMetrics(ctx, clusterID, e)
 }
 
 // probeMetrics tries each plausible API base until one answers a trivial
@@ -221,6 +555,7 @@ func (d *Discoverer) probeMetrics(ctx context.Context, clusterID int, e *Endpoin
 			e.Detail = ""
 			return true
 		}
+		e.Detail = "answered, but not with a Prometheus query result"
 	}
 	e.APIBase = ""
 	return false
@@ -244,20 +579,25 @@ func (d *Discoverer) probeAlerts(ctx context.Context, clusterID int, e *Endpoint
 // requires the token to hold "*" on resource names. If that fails and the
 // Service advertises ports, it retries with each one.
 func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, path string, q url.Values) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	svc := e.Service
 	svc.Port = ""
-	body, err := d.c.ServiceProxyGet(ctx, ScopeCluster, clusterID, svc, path, q)
+	body, err := d.attempt(ctx, clusterID, svc, path, q)
 	if err == nil {
 		e.Service.Port = ""
 		return body, nil
 	}
 	firstErr := err
-	for _, p := range e.Ports {
+
+	ports := e.Ports
+	if len(ports) > maxPortRetries {
+		ports = ports[:maxPortRetries]
+	}
+	for _, p := range ports {
+		if ctx.Err() != nil {
+			break
+		}
 		svc.Port = p
-		body, err := d.c.ServiceProxyGet(ctx, ScopeCluster, clusterID, svc, path, q)
+		body, err := d.attempt(ctx, clusterID, svc, path, q)
 		if err == nil {
 			e.Service.Port = p
 			return body, nil
@@ -266,9 +606,16 @@ func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, pat
 	return nil, firstErr
 }
 
+func (d *Discoverer) attempt(ctx context.Context, clusterID int, svc ServiceRef, path string, q url.Values) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return d.c.ServiceProxyGet(ctx, ScopeCluster, clusterID, svc, path, q)
+}
+
 // classify turns Service objects into ranked endpoint candidates. Ordering
 // matters: a purpose-built query service beats an operator's headless
-// "-operated" Service, which often has no usable HTTP route.
+// "-operated" Service, which often has no usable HTTP route, and both beat an
+// exporter that only happens to have "prometheus" in its name.
 func classify(objects []map[string]any) []Endpoint {
 	var out []Endpoint
 	for _, o := range objects {
@@ -286,12 +633,24 @@ func classify(objects []map[string]any) []Endpoint {
 			continue
 		}
 		out = append(out, Endpoint{
-			Flavor:  f,
-			Service: ServiceRef{Namespace: ns, Name: name},
-			Ports:   portsOf(o),
+			Flavor:       f,
+			Service:      ServiceRef{Namespace: ns, Name: name},
+			Ports:        portsOf(o),
+			ScrapeTarget: isScrapeTarget(name),
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].ScrapeTarget != out[j].ScrapeTarget {
+			return !out[i].ScrapeTarget
+		}
+		if ri, rj := rank(out[i]), rank(out[j]); ri != rj {
+			return ri < rj
+		}
+		if out[i].Service.Namespace != out[j].Service.Namespace {
+			return out[i].Service.Namespace < out[j].Service.Namespace
+		}
+		return out[i].Service.Name < out[j].Service.Name
+	})
 	return out
 }
 
@@ -315,6 +674,32 @@ func flavorOf(name string, labels map[string]string) Flavor {
 		return FlavorPrometheus
 	}
 	return FlavorUnknown
+}
+
+// scrapeTargetNames are the Services that match the discovery filter by name
+// but serve /metrics for something else to scrape rather than a query API of
+// their own.
+//
+// On the cluster this was written against there were twelve of them and two
+// real alert sources, and because they were probed first the two real ones
+// were never reached. They stay in the candidate list — the operator can pin
+// one if this list is wrong about their install — but they are not probed
+// unless every candidate was asked for.
+var scrapeTargetNames = []string{
+	"node-exporter", "kube-state-metrics", "grafana", "pushgateway",
+	"kubelet", "kube-etcd", "kube-scheduler", "kube-controller-manager",
+	"kube-proxy", "core-dns", "coredns", "vmagent", "exporter", "operator",
+	"blackbox", "statsd",
+}
+
+func isScrapeTarget(name string) bool {
+	n := strings.ToLower(name)
+	for _, s := range scrapeTargetNames {
+		if strings.Contains(n, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // rank orders candidates so the most likely to answer is probed first.

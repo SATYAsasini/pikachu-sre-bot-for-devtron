@@ -53,3 +53,41 @@ func TestRouterDefaultUIIsEmbedded(t *testing.T) {
 		t.Fatalf("default UI: status %d", rec.Code)
 	}
 }
+
+// The monitoring picker writes with PUT and clears with DELETE. Both were
+// added to a router whose CORS allow-list still said GET and POST.
+func TestRouterAllowsTheVerbsItServes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fixtureServer().Handler().ServeHTTP(rec,
+		httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/v1/clusters/1/monitoring", nil))
+
+	allow := rec.Header().Get("Access-Control-Allow-Methods")
+	for _, verb := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+		if !strings.Contains(allow, verb) {
+			t.Errorf("%s is served but not advertised: %q", verb, allow)
+		}
+	}
+}
+
+// A bad cluster id is rejected before any dependency is touched, which is
+// also what makes these routes testable without a database.
+func TestMonitoringChoiceRejectsABadClusterID(t *testing.T) {
+	h := fixtureServer().Handler()
+	for _, tc := range []struct{ method, target string }{
+		{http.MethodPut, "/v1/clusters/0/monitoring"},
+		{http.MethodPut, "/v1/clusters/abc/monitoring"},
+		{http.MethodDelete, "/v1/clusters/-1/monitoring"},
+		{http.MethodDelete, "/v1/clusters/ünïcode/monitoring"},
+		{http.MethodGet, "/v1/clusters/0/monitoring"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), tc.method, tc.target,
+			strings.NewReader(`{"alerts":{"namespace":"monitoring","name":"vmalert"}}`)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s: status %d, want 400", tc.method, tc.target, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "bad_cluster_id") {
+			t.Errorf("%s %s: body %q", tc.method, tc.target, rec.Body.String())
+		}
+	}
+}

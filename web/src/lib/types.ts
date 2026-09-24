@@ -66,6 +66,8 @@ export interface Cluster {
   detail?: string
   /** Whether a run pointed here can succeed. Only `usable` qualifies. */
   investigable?: boolean
+  /** An operator has pinned which monitoring endpoints this cluster uses. */
+  monitoringPinned?: boolean
 }
 
 export interface Environment {
@@ -99,6 +101,28 @@ export interface MonitoringEndpoint {
   apiBase: string
   reachable: boolean
   detail: string
+  /**
+   * Whether this candidate was actually tried. A walk stops as soon as a half
+   * is satisfied, so `reachable: false` covers two very different answers and
+   * only this tells them apart. Never draw an unprobed row as a failure.
+   */
+  probed?: boolean
+  /** An exporter that matched the name filter but serves no query API. */
+  scrapeTarget?: boolean
+  /** Pinned by the operator, as opposed to landed on by the heuristic. */
+  chosen?: boolean
+  ports?: string[] | null
+}
+
+/** Namespace and name are all it takes to name a Service. */
+export interface MonitoringPick {
+  namespace: string
+  name: string
+}
+
+export interface MonitoringChoice {
+  metrics?: MonitoringPick | null
+  alerts?: MonitoringPick | null
 }
 
 /**
@@ -111,8 +135,31 @@ export interface MonitoringStack {
   clusterName: string
   metrics?: MonitoringEndpoint | null
   alerts?: MonitoringEndpoint | null
+  /**
+   * Everything that looked like part of a monitoring stack, answered or not.
+   * The server has always sent this; the UI never had it in the type, so the
+   * one screen that needs it — choosing between two alert sources — could not
+   * be built.
+   */
+  candidates?: MonitoringEndpoint[] | null
+  chosen?: MonitoringChoice | null
   discoveredAt: string
+  /** The walk did not finish. Not cached, and not to be read as an absence. */
+  partial?: boolean
   notes?: string[] | null
+}
+
+/** The half of the stack an endpoint belongs to. */
+export type MonitoringHalf = 'metrics' | 'alerts'
+
+export const ALERT_FLAVORS: readonly string[] = ['alertmanager', 'vmalert']
+
+export function monitoringHalf(e: MonitoringEndpoint): MonitoringHalf {
+  return ALERT_FLAVORS.includes(e.flavor) ? 'alerts' : 'metrics'
+}
+
+export function samePick(a: MonitoringPick | null | undefined, e: MonitoringEndpoint): boolean {
+  return !!a && a.namespace === e.service.namespace && a.name === e.service.name
 }
 
 /* ------------------------------------------------------------------ apps */

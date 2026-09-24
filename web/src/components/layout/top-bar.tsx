@@ -89,6 +89,9 @@ function ScopeChip() {
   if (!hasCluster(scope)) return null
 
   const parts = [scope.clusterName, scope.namespace ?? scope.environmentName, scope.appName].filter(Boolean) as string[]
+  // The cluster is not clearable — every screen needs one — so the button
+  // only appears when there is a narrowing to undo.
+  const narrowed = parts.length > 1
 
   return (
     <div className="hidden min-w-0 items-center md:flex">
@@ -96,7 +99,10 @@ function ScopeChip() {
         <TooltipTrigger asChild>
           <Link
             to="/"
-            className="inline-flex h-6 min-w-0 items-center gap-1 rounded-l border border-r-0 border-border bg-well pr-1 pl-1.5 font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:text-foreground"
+            className={cn(
+              'inline-flex h-6 min-w-0 items-center gap-1 border border-border bg-well pr-1 pl-1.5 font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:text-foreground',
+              narrowed ? 'rounded-l border-r-0' : 'rounded',
+            )}
           >
             {parts.map((p, i) => (
               <span key={`${p}-${i}`} className="flex min-w-0 items-center gap-1">
@@ -108,19 +114,21 @@ function ScopeChip() {
         </TooltipTrigger>
         <TooltipContent>Runs are created in this scope. Click to change it.</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={clearScope}
-            aria-label="Clear scope"
-            className="inline-flex h-6 items-center rounded-r border border-border bg-well px-1 text-muted-foreground transition-colors hover:text-bad"
-          >
-            <X aria-hidden className="size-3" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Clear the scope</TooltipContent>
-      </Tooltip>
+      {narrowed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={clearScope}
+              aria-label="Widen to the whole cluster"
+              className="inline-flex h-6 items-center rounded-r border border-border bg-well px-1 text-muted-foreground transition-colors hover:text-bad"
+            >
+              <X aria-hidden className="size-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Widen back to the whole cluster</TooltipContent>
+        </Tooltip>
+      ) : null}
     </div>
   )
 }

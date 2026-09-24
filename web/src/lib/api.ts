@@ -16,6 +16,7 @@ import type {
   RulePreview,
   RulesConfig,
   KnowledgeComponent,
+  MonitoringPick,
   MonitoringStack,
   ProbeResult,
   Run,
@@ -132,8 +133,25 @@ export const api = {
     return list(await request<Environment[] | null>(path))
   },
 
-  monitoring: (clusterId: number): Promise<MonitoringStack> =>
-    isFixtureMode() ? fixtures.monitoring(clusterId) : request<MonitoringStack>(`/clusters/${clusterId}/monitoring`),
+  monitoring: (clusterId: number, probeAll = false): Promise<MonitoringStack> =>
+    isFixtureMode()
+      ? fixtures.monitoring(clusterId)
+      : request<MonitoringStack>(`/clusters/${clusterId}/monitoring`, {
+          params: probeAll ? { probe: 'all' } : {},
+        }),
+
+  /**
+   * Pin which discovered endpoints this cluster uses. A null half means
+   * "whatever discovery picks", which is what the Auto row sends.
+   */
+  chooseMonitoring: (
+    clusterId: number,
+    body: { clusterName?: string; metrics: MonitoringPick | null; alerts: MonitoringPick | null },
+  ): Promise<MonitoringStack> =>
+    request<MonitoringStack>(`/clusters/${clusterId}/monitoring`, { method: 'PUT', json: body }),
+
+  resetMonitoring: (clusterId: number): Promise<MonitoringStack> =>
+    request<MonitoringStack>(`/clusters/${clusterId}/monitoring`, { method: 'DELETE' }),
 
   apps: async (params: { environmentId?: number; search?: string; status?: string } = {}): Promise<DevtronApp[]> =>
     isFixtureMode() ? fixtures.apps(params) : list(await request<DevtronApp[] | null>('/apps', { params })),

@@ -1,0 +1,300 @@
+package devtron
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Deterministic fixtures for discovery.
+//
+// Every one is built by a function rather than shared as a package variable,
+// so a test that mutates what it is handed cannot leak into the next. The
+// service lists mirror the shapes a real cluster produces: a handful of real
+// query APIs buried in a pile of exporters that match the same name filter.
+
+// svc builds one Service object the way the orchestrator's filtered resource
+// list returns it.
+func svc(ns, name string, ports ...int) map[string]any {
+	p := make([]any, 0, len(ports))
+	for _, n := range ports {
+		p = append(p, map[string]any{"port": float64(n)})
+	}
+	return map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata":   map[string]any{"namespace": ns, "name": name, "labels": map[string]any{}},
+		"spec":       map[string]any{"ports": p},
+	}
+}
+
+// fxBusyCluster is the shape this whole rewrite exists for: one real metrics
+// backend and two real alert sources, behind a dozen exporters that match the
+// discovery filter by name and answer nothing. On the cluster this was
+// written against the two alert sources sorted eighteenth and nineteenth.
+func fxBusyCluster() []map[string]any {
+	return []map[string]any{
+		svc("monitoring", "vmsingle-victoria-metrics", 8429, 8428),
+		svc("monitoring", "vmalert-victoria-metrics", 8080),
+		svc("monitoring", "vmalertmanager-victoria-metrics", 9093, 9094),
+		svc("kube-system", "victoria-metrics-core-dns", 9153),
+		svc("kube-system", "victoria-metrics-kube-etcd", 2379),
+		svc("kube-system", "victoria-metrics-kube-scheduler", 10259),
+		svc("kube-system", "kube-prom-kube-prometheus-kubelet", 10250, 10255, 4194),
+		svc("monitoring", "victoria-metrics-stage-mon-grafana", 80),
+		svc("monitoring", "victoria-metrics-stage-mon-kube-state-metrics", 8080),
+		svc("monitoring", "victoria-metrics-stage-mon-prometheus-node-exporter", 9101),
+		svc("monitoring", "victoria-metrics-stage-mon-victoria-metrics-operator", 8080, 9443),
+		svc("monitoring", "vmagent-victoria-metrics", 8429),
+		svc("optscale", "staging-optscale-finops-prometheus-pushgateway", 9091),
+		svc("monitoring", "prometheus-operated", 9090),
+		svc("alpha", "alertmanager-headless", 9093),
+	}
+}
+
+// fxTwoAlertSources is the minimum case for the picker: two alert sources
+// that both answer, so the heuristic has to choose and can choose wrong.
+func fxTwoAlertSources() []map[string]any {
+	return []map[string]any{
+		svc("utils", "shared-monitoring-stack-ku-prometheus", 9090),
+		svc("utils", "shared-monitoring-stack-ku-alertmanager", 9093),
+		svc("utils", "alertmanager-operated", 9093),
+	}
+}
+
+// fxExportersOnly has nothing that serves a query API at all. Discovery must
+// say so rather than pick one and report it as coverage.
+func fxExportersOnly() []map[string]any {
+	return []map[string]any{
+		svc("monitoring", "prometheus-node-exporter", 9100),
+		svc("monitoring", "victoria-metrics-kube-state-metrics", 8080),
+	}
+}
+
+// fxNoPorts is a Service with no ports at all: the portless proxy target is
+// the only attempt that can be made.
+func fxNoPorts() []map[string]any {
+	return []map[string]any{svc("monitoring", "prometheus-server")}
+}
+
+// fxManyPorts advertises more ports than the retry budget allows, so the cap
+// is what stops one dead Service eating the whole walk.
+func fxManyPorts() []map[string]any {
+	return []map[string]any{svc("monitoring", "prometheus-server", 1, 2, 3, 4, 5, 6)}
+}
+
+// fxUnicode carries non-ASCII in the namespace and name. They reach a URL
+// path and an error message verbatim.
+func fxUnicode() []map[string]any {
+	return []map[string]any{
+		svc("監視", "プロメテウス-prometheus-server", 9090),
+		svc("监控", "alertmanager-告警", 9093),
+	}
+}
+
+// fxMalformed is every broken object shape one list can contain: no
+// metadata, no name, no namespace, a name that matches nothing, ports of the
+// wrong type, and a nil spec. None of them may panic and none may become a
+// candidate.
+func fxMalformed() []map[string]any {
+	return []map[string]any{
+		{},
+		{"metadata": nil},
+		{"metadata": map[string]any{"name": "prometheus-server"}},               // no namespace
+		{"metadata": map[string]any{"namespace": "monitoring"}},                 // no name
+		{"metadata": map[string]any{"namespace": "x", "name": "redis-primary"}}, // no flavor
+		{
+			"metadata": map[string]any{"namespace": "monitoring", "name": "prometheus-weird"},
+			"spec":     map[string]any{"ports": []any{map[string]any{"port": true}, nil, "nope"}},
+		},
+		{
+			"metadata": map[string]any{"namespace": "monitoring", "name": "thanos-query-frontend", "labels": "not-a-map"},
+			"spec":     nil,
+		},
+	}
+}
+
+// --- probe response bodies -------------------------------------------------
+
+func fxPromOK() string      { return `{"status":"success","data":{"resultType":"vector","result":[]}}` }
+func fxPromNotJSON() string { return `<html><body>login</body></html>` }
+func fxAlertmanagerStatus() string {
+	return `{"cluster":{"status":"ready"},"uptime":"2026-09-24T06:00:00Z"}`
+}
+func fxVMAlertAlerts() string { return `{"status":"success","data":{"alerts":[]}}` }
+func fx503() string {
+	return `<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body>503</body></html>`
+}
+
+// --- fake orchestrator -----------------------------------------------------
+
+// probeKey is how a test names one candidate's proxy responses.
+func probeKey(ns, name string) string { return ns + "/" + name }
+
+// fakeDevtron is an httptest orchestrator: one resource-list response and a
+// per-Service answer for the Kubernetes proxy.
+type fakeDevtron struct {
+	srv *httptest.Server
+
+	mu sync.Mutex
+	// probes counts proxy attempts per "namespace/name", so a test can assert
+	// what discovery did *not* bother to ask.
+	probes map[string]int
+	// listCalls counts resource-list calls, which is how single-flight is
+	// observed.
+	listCalls int
+}
+
+// fakeOpts configures the orchestrator's behaviour.
+type fakeOpts struct {
+	// Objects is the service list returned to discovery.
+	Objects []map[string]any
+	// OK maps "namespace/name" to the body its proxy returns with a 200.
+	// Anything not listed answers 503.
+	OK map[string]string
+	// Slow maps "namespace/name" to a delay before answering, for the
+	// budget and cancellation cases.
+	Slow map[string]time.Duration
+	// NeedsPort, when set for a service, makes the portless target fail so
+	// the port fallback is what has to work.
+	NeedsPort map[string]bool
+	// ListErr makes the resource list itself fail.
+	ListErr bool
+	// ListDelay stalls the resource list.
+	ListDelay time.Duration
+}
+
+func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
+	f := &fakeDevtron{probes: map[string]int{}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/orchestrator/k8s/resource/list", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.listCalls++
+		f.mu.Unlock()
+		if o.ListDelay > 0 {
+			select {
+			case <-time.After(o.ListDelay):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if o.ListErr {
+			http.Error(w, `{"errors":[{"userMessage":"cluster unreachable"}]}`, http.StatusBadGateway)
+			return
+		}
+		objs := o.Objects
+		if objs == nil {
+			objs = []map[string]any{}
+		}
+		body, _ := json.Marshal(map[string]any{"code": 200, "status": "OK", "result": objs})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	})
+
+	// /orchestrator/k8s/proxy/cluster/{id}/api/v1/namespaces/{ns}/services/{target}/proxy/{path}
+	mux.HandleFunc("/orchestrator/k8s/proxy/", func(w http.ResponseWriter, r *http.Request) {
+		ns, target, ok := parseProxyPath(r.URL.Path)
+		if !ok {
+			http.Error(w, "bad proxy path", http.StatusBadRequest)
+			return
+		}
+		// "https:name:port" and "name:port" both reduce to the Service name.
+		name, port := splitTarget(target)
+		key := probeKey(ns, name)
+
+		f.mu.Lock()
+		f.probes[key]++
+		f.mu.Unlock()
+
+		if d := o.Slow[key]; d > 0 {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if o.NeedsPort[key] && port == "" {
+			http.Error(w, fx503(), http.StatusServiceUnavailable)
+			return
+		}
+		body, served := o.OK[key]
+		if !served {
+			http.Error(w, fx503(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+
+	f.srv = httptest.NewServer(mux)
+	c := New(Options{BaseURL: f.srv.URL, Token: "t", Timeout: 5 * time.Second})
+	return f, c
+}
+
+func (f *fakeDevtron) Close() { f.srv.Close() }
+
+func (f *fakeDevtron) probed(ns, name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probes[probeKey(ns, name)]
+}
+
+func (f *fakeDevtron) lists() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listCalls
+}
+
+// parseProxyPath pulls the namespace and the proxy target back out of the
+// path the client built.
+func parseProxyPath(p string) (ns, target string, ok bool) {
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "namespaces" {
+			ns = parts[i+1]
+		}
+		if parts[i] == "services" {
+			target = parts[i+1]
+		}
+	}
+	if ns == "" || target == "" {
+		return "", "", false
+	}
+	unescaped, err := unescape(ns)
+	if err == nil {
+		ns = unescaped
+	}
+	if t, err := unescape(target); err == nil {
+		target = t
+	}
+	return ns, target, true
+}
+
+func splitTarget(target string) (name, port string) {
+	t := strings.TrimPrefix(strings.TrimPrefix(target, "https:"), "http:")
+	if i := strings.LastIndex(t, ":"); i >= 0 {
+		return t[:i], t[i+1:]
+	}
+	return t, ""
+}
+
+func unescape(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			var v int
+			if _, err := fmt.Sscanf(s[i+1:i+3], "%02x", &v); err == nil {
+				b.WriteByte(byte(v))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String(), nil
+}

@@ -81,8 +81,18 @@ func (w *Worker) Sweep(ctx context.Context) {
 	}
 }
 
+// sweepBudget is one cluster's whole turn: discovery, the alert read, and
+// claiming whatever the rules picked.
+//
+// It has to clear a cold discovery walk with room to spare. At sixty seconds
+// it did not, on a cluster with two dozen candidate Services — the sweep
+// would die mid-walk every two minutes, and until discovery learned not to
+// cache a half-finished answer that was enough to convince the whole product
+// the cluster had no alert source.
+const sweepBudget = 90 * time.Second
+
 func (w *Worker) sweepCluster(ctx context.Context, c runs.RuleCluster) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sweepBudget)
 	defer cancel()
 
 	cfg, err := w.Runs.Store.LoadRules(ctx, c.ID)

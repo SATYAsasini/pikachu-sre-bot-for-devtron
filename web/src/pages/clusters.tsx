@@ -15,7 +15,8 @@ import { api, errorMessage } from '@/lib/api'
 import { qk, useClusters } from '@/lib/queries'
 import { useScope } from '@/lib/scope'
 import { alertMeta } from '@/lib/alert-meta'
-import type { Priority, RulesConfig } from '@/lib/types'
+import { MonitoringPicker } from '@/components/scope/monitoring-picker'
+import type { Cluster, Priority, RulesConfig } from '@/lib/types'
 
 const PRIORITY_TONE: Record<Priority, Tone> = { P0: 'bad', P1: 'warn', P2: 'neutral' }
 
@@ -65,7 +66,7 @@ function safe(cfg: RulesConfig | undefined, clusterId: number): RulesConfig {
  * The preview updates as you type, before anything is saved. Saving is a
  * separate, deliberate act.
  */
-type Tab = 'rules' | 'notifications'
+type Tab = 'rules' | 'notifications' | 'monitoring'
 
 /**
  * Per-cluster configuration, one cluster at a time.
@@ -146,7 +147,7 @@ export function ClustersPage() {
                 <span className="truncate font-mono text-xs font-semibold">{c.clusterName}</span>
                 {on ? <Chip tone="accent" className="ml-auto shrink-0">editing</Chip> : null}
               </span>
-              <ClusterSummary clusterId={c.id} />
+              <ClusterSummary cluster={c} />
             </button>
           )
         })}
@@ -157,6 +158,7 @@ export function ClustersPage() {
           [
             ['rules', 'Alert rules'],
             ['notifications', 'Notifications'],
+            ['monitoring', 'Monitoring'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -177,13 +179,18 @@ export function ClustersPage() {
         ))}
       </div>
 
-      {ready ? <ClusterConfig key={clusterId} clusterId={clusterId} clusterName={clusterName} tab={tab} /> : null}
+      {!ready ? null : tab === 'monitoring' ? (
+        <MonitoringPicker key={clusterId} clusterId={clusterId} clusterName={clusterName} />
+      ) : (
+        <ClusterConfig key={clusterId} clusterId={clusterId} clusterName={clusterName} tab={tab} />
+      )}
     </div>
   )
 }
 
 /** A one-line "is anything configured here" for the cluster cards. */
-function ClusterSummary({ clusterId }: { clusterId: number }) {
+function ClusterSummary({ cluster }: { cluster: Cluster }) {
+  const clusterId = cluster.id
   const q = useQuery({ queryKey: qk.rules(clusterId), queryFn: () => api.rules(clusterId), staleTime: 60_000 })
   const cfg = q.data
   if (!cfg) return <span className="mt-1 block text-[0.625rem] text-muted-foreground">…</span>
@@ -200,6 +207,7 @@ function ClusterSummary({ clusterId }: { clusterId: number }) {
         <span className="text-[0.625rem] text-muted-foreground/70">· no channel</span>
       )}
       {cfg.autoEnabled ? <Chip tone="warn">auto</Chip> : null}
+      {cluster.monitoringPinned ? <Chip tone="accent">pinned stack</Chip> : null}
     </span>
   )
 }
@@ -211,7 +219,7 @@ function ClusterConfig({
 }: {
   clusterId: number
   clusterName?: string
-  tab: Tab
+  tab: Exclude<Tab, 'monitoring'>
 }) {
 
   const saved = useQuery({

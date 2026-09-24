@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ArrowRight, Boxes, History, Settings2, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Boxes, EyeOff, History, RotateCw, Settings2, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { cn } from 'cn'
 import { useHoverZone } from '@/lib/use-hover-zone'
@@ -69,10 +69,11 @@ export function NewRunPage() {
   // cluster raised it, so it is worth a record; a passing thought is not.
   const [chatSeed, setChatSeed] = useState<string | null>(null)
 
-  const list = useMemo(
-    () => (alerts.data ?? []).filter((a) => matchesSearch(a, mode, query)),
-    [alerts.data, mode, query],
-  )
+  // The envelope, not a bare list: an empty list because nothing is wrong and
+  // an empty list because no alert source answered are different facts.
+  const firing = useMemo(() => alerts.data?.alerts ?? [], [alerts.data])
+  const unavailable = alerts.data?.unavailable
+  const list = useMemo(() => firing.filter((a) => matchesSearch(a, mode, query)), [firing, mode, query])
 
   // Twenty rows is a screen. A hundred is a document you scroll past looking
   // for where the page ends.
@@ -80,10 +81,7 @@ export function NewRunPage() {
 
   // One number for the greeting. Severity spelling varies by alert source, so
   // it is matched loosely rather than compared to a constant.
-  const critical = useMemo(
-    () => (alerts.data ?? []).filter((a) => /crit|page|p0/i.test(a.severity ?? '')).length,
-    [alerts.data],
-  )
+  const critical = useMemo(() => firing.filter((a) => /crit|page|p0/i.test(a.severity ?? '')).length, [firing])
 
   // Setup is not finished: say which step, rather than showing an empty page.
   if (!readiness.loading && !readiness.ready) {
@@ -117,7 +115,7 @@ export function NewRunPage() {
         onSubmit={(ask) => setChatSeed(ask)}
         examples={ASK_EXAMPLES}
         clusterName={scope.clusterName}
-        alertCount={alerts.data?.length}
+        alertCount={unavailable ? undefined : firing.length}
         criticalCount={critical}
         loadingAlerts={alerts.isPending}
       />
@@ -146,7 +144,7 @@ export function NewRunPage() {
             />
           }
           toolbar={
-            ready && (alerts.data?.length ?? 0) > 0 ? (
+            ready && !unavailable && firing.length > 0 ? (
               <FilterBar
               label="Filter by"
               scope={
@@ -162,7 +160,7 @@ export function NewRunPage() {
               placeholder={SEARCH_HINT[mode]}
               hint={SEARCH_EXPLAINS[mode]}
                 count={list.length}
-                total={alerts.data?.length}
+                total={firing.length}
                 noun="alert"
               />
             ) : null
@@ -178,6 +176,11 @@ export function NewRunPage() {
               <RowSkeleton rows={5} />
             ) : alerts.isError ? (
               <ErrorState error={alerts.error} onRetry={() => void alerts.refetch()} />
+            ) : unavailable ? (
+              // Not "nothing is firing". We could not ask, and saying the two
+              // are the same is how a monitoring tool reports a burning
+              // cluster as healthy.
+              <UnavailableState reason={unavailable} notes={alerts.data?.notes} onRetry={() => void alerts.refetch()} />
             ) : list.length === 0 ? (
               <EmptyState
                 icon={AlertTriangle}
@@ -553,6 +556,22 @@ function Greeting({
     )
   }
 
+  // Unknown is its own state. Greeting someone with "nothing is firing" when
+  // no alert source answered is the same lie as the empty list below it.
+  if (!loading && alertCount === undefined) {
+    return (
+      <>
+        <p className="font-display text-2xl leading-tight font-semibold tracking-tight sm:text-3xl">
+          I cannot see {clusterName ?? 'this cluster'} right now.
+        </p>
+        <Text tone="muted" className="mt-1.5">
+          No alert source answered, so I do not know what is firing. Ask me something anyway — I can still read
+          the cluster directly.
+        </Text>
+      </>
+    )
+  }
+
   if (loading || alertCount === undefined) {
     return (
       <>
@@ -632,6 +651,66 @@ function AboutCallout() {
         ))}
       </span>
     </Link>
+  )
+}
+
+/**
+ * The alert source could not be reached.
+ *
+ * Deliberately not an EmptyState. An empty list and an unanswerable question
+ * look identical in a list and mean opposite things, so this one is styled as
+ * a warning, says which source failed, and offers a retry — because the
+ * cluster may be fine and the exporter may simply have restarted.
+ */
+function UnavailableState({
+  reason,
+  notes,
+  onRetry,
+}: {
+  reason: string
+  notes?: string[]
+  onRetry: () => void
+}) {
+  return (
+    <div className="mx-auto max-w-lg px-4 py-10 text-center">
+      <span className="mx-auto grid size-10 place-items-center rounded-full border border-warn/35 bg-warn/10">
+        <EyeOff aria-hidden className="size-4 text-warn" />
+      </span>
+      <Heading level={2} className="mt-3">
+        We could not ask
+      </Heading>
+      <Text tone="muted" className="mt-1">
+        No alert source answered on this cluster, so this list is unknown — not empty. Something may well be
+        firing; we simply cannot see it from here.
+      </Text>
+
+      {(notes ?? []).length > 0 ? (
+        <ul className="mt-3 space-y-1 text-left">
+          {(notes ?? []).map((n) => (
+            <li key={n} className="flex gap-1.5 text-[0.6875rem] leading-relaxed text-muted-foreground">
+              <span className="text-warn">·</span>
+              <span className="min-w-0">{n}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <Text tone="fine" className="mt-2">
+          {reason}
+        </Text>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          <RotateCw aria-hidden className="size-3.5" />
+          Try again
+        </Button>
+        <Button asChild size="sm" variant="ghost">
+          <Link to="/settings" search={{ section: 'configuration' as const }}>
+            Check cluster reach
+          </Link>
+        </Button>
+      </div>
+    </div>
   )
 }
 

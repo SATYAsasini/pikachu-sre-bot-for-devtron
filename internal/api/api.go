@@ -69,6 +69,12 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/helm-apps", s.listHelmApps)
 		r.Get("/alerts", s.listAlerts)
 
+		// Per-cluster alert rules: what to show, what to mute, what to
+		// investigate unprompted, and how urgent each one is.
+		r.Get("/rules", s.getRules)
+		r.Put("/rules", s.putRules)
+		r.Post("/rules/preview", s.previewRules)
+
 		r.Post("/runs", s.createRun)
 		r.Get("/runs", s.listRuns)
 		r.Get("/runs/{id}", s.getRun)

@@ -1,4 +1,4 @@
-import { History, Radar, Settings2 } from 'lucide-react'
+import { History, Radar, Settings2, SlidersHorizontal } from 'lucide-react'
 
 /**
  * The product's destinations, in one place.
@@ -16,5 +16,12 @@ import { History, Radar, Settings2 } from 'lucide-react'
 export const NAV = [
   { to: '/', label: 'Investigate', icon: Radar, exact: true, blurb: 'Ask, or pick something that is on fire' },
   { to: '/runs', label: 'History', icon: History, exact: false, blurb: 'Every run this agent has made' },
+  {
+    to: '/rules',
+    label: 'Alert rules',
+    icon: SlidersHorizontal,
+    exact: false,
+    blurb: 'What to show, what is noise, what is P0',
+  },
   { to: '/settings', label: 'Settings', icon: Settings2, exact: false, blurb: 'Connection, reach, and how it works' },
 ] as const

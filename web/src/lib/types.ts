@@ -174,6 +174,22 @@ export interface Alert {
   resource: string
 }
 
+/**
+ * What `/v1/alerts` answers with.
+ *
+ * `unavailable` is the whole point of the envelope: an empty list because
+ * nothing is wrong and an empty list because nobody could be asked are
+ * different facts, and rendering the second as the first is how a monitoring
+ * tool tells you a cluster is healthy while it is on fire.
+ */
+export interface AlertsResult {
+  alerts: Alert[]
+  /** Set when no alert source could be reached. The list is then meaningless. */
+  unavailable?: string
+  /** What discovery noticed on the way, reachable or not. */
+  notes?: string[]
+}
+
 /* ------------------------------------------------------------------ runs */
 
 export const RUN_STATUSES = [
@@ -553,4 +569,61 @@ export interface Harness {
   orchestration: HarnessLayer[]
   normalise: HarnessNormalise[]
   guarantees: string[]
+}
+
+/* ----------------------------------------------------------------- rules */
+
+export const PRIORITIES = ['P0', 'P1', 'P2'] as const
+export type Priority = (typeof PRIORITIES)[number]
+
+/**
+ * One condition against an alert payload.
+ *
+ * Every field is optional and they are ANDed, so an empty match matches
+ * everything — which is what makes a bare `{}` a usable catch-all at the end
+ * of a priority list.
+ */
+export interface RuleMatch {
+  name?: string
+  severity?: string[]
+  namespace?: string[]
+  kind?: string[]
+  labels?: Record<string, string>
+  labelsRegex?: Record<string, string>
+}
+
+export interface Rule {
+  name?: string
+  match: RuleMatch
+  priority?: Priority
+  enabled: boolean
+}
+
+export interface RulesConfig {
+  clusterId: number
+  show: Rule[]
+  mute: Rule[]
+  auto: Rule[]
+  autoEnabled: boolean
+  priority: Rule[]
+}
+
+export interface RuleDecision {
+  show: boolean
+  priority: Priority
+  auto: boolean
+  /** The rule that set the priority, so it can be pointed at. */
+  why?: string
+  /** The rule that hid it. */
+  mutedBy?: string
+}
+
+export interface RulePreview {
+  rows: { alert: Alert; decision: RuleDecision }[]
+  total: number
+  shown: number
+  muted: number
+  auto: number
+  byPriority: Record<Priority, number>
+  unavailable?: string
 }

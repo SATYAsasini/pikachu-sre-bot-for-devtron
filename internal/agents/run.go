@@ -46,7 +46,22 @@ var sreToolNames = []string{
 	"devtron.app_context",
 }
 
-// Pipeline builds and runs the two-agent tree.
+// Loader exposes this pipeline's agent through ADK's own registry.
+//
+// `agent.Loader` is how everything else in ADK asks "what agents are there,
+// and give me one by name" — adkrest takes one, the A2A server takes one, and
+// a config-driven builder would populate one. Building the agent and then
+// wrapping it costs nothing and means we are not the only thing in the
+// process that knows how to find it.
+func (p *Pipeline) Loader(ctx context.Context, deps *tools.Deps, guard *Guard) (agent.Loader, error) {
+	root, err := p.build(ctx, deps, guard)
+	if err != nil {
+		return nil, err
+	}
+	return agent.NewSingleLoader(root), nil
+}
+
+// Pipeline builds and runs the agent.
 type Pipeline struct {
 	Registry *tools.Registry
 	Models   *ModelFactory
@@ -82,10 +97,15 @@ func (p *Pipeline) Run(ctx context.Context, in Input, deps *tools.Deps, ledger L
 	budget := &Budget{MaxToolCalls: p.Budget.MaxToolCalls, MaxModelTokens: p.Budget.MaxModelTokens}
 	guard := NewGuard(budget, ledger, deps.RedactString)
 
-	root, err := p.build(ctx, deps, guard)
+	// Through ADK's loader rather than straight off build(): the runner takes
+	// the root agent either way, but going through the registry is what lets
+	// adkrest and the A2A server serve the same agent without a second path
+	// to construct it.
+	loader, err := p.Loader(ctx, deps, guard)
 	if err != nil {
 		return Output{Status: runs.StatusFailed}, err
 	}
+	root := loader.RootAgent()
 
 	sessSvc := p.Sessions
 	if sessSvc == nil {

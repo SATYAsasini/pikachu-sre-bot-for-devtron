@@ -6,6 +6,7 @@ export const qk = {
   health: ['health'] as const,
   config: ['config'] as const,
   harness: ['harness'] as const,
+  rules: (clusterId?: number) => ['rules', clusterId ?? 0] as const,
   clusters: ['clusters'] as const,
   environments: (clusterId?: number) => ['environments', clusterId ?? 'all'] as const,
   monitoring: (clusterId: number) => ['monitoring', clusterId] as const,

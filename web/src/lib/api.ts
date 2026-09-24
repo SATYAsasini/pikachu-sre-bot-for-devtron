@@ -1,5 +1,5 @@
 import type {
-  Alert,
+  AlertsResult,
   AppConfig,
   Cluster,
   CreateRunRequest,
@@ -8,6 +8,8 @@ import type {
   Health,
   HelmApp,
   Harness,
+  RulePreview,
+  RulesConfig,
   KnowledgeComponent,
   MonitoringStack,
   ProbeResult,
@@ -144,8 +146,11 @@ export const api = {
       includePending?: boolean
       limit?: number
     } = {},
-  ): Promise<Alert[]> =>
-    isFixtureMode() ? fixtures.alerts(params) : list(await request<Alert[] | null>('/alerts', { params })),
+  ): Promise<AlertsResult> => {
+    if (isFixtureMode()) return { alerts: await fixtures.alerts(params) }
+    const res = await request<AlertsResult | null>('/alerts', { params })
+    return { alerts: list(res?.alerts), unavailable: res?.unavailable, notes: res?.notes }
+  },
 
   createRun: (body: CreateRunRequest): Promise<Run> =>
     isFixtureMode() ? fixtures.createRun(body) : request<Run>('/runs', { method: 'POST', json: body }),
@@ -172,6 +177,15 @@ export const api = {
       : list(await request<KnowledgeComponent[] | null>('/knowledge', { params })),
 
   harness: (): Promise<Harness> => request<Harness>('/harness'),
+
+  rules: (clusterId: number): Promise<RulesConfig> => request<RulesConfig>('/rules', { params: { clusterId } }),
+
+  saveRules: (body: RulesConfig & { clusterName?: string }): Promise<RulesConfig> =>
+    request<RulesConfig>('/rules', { method: 'PUT', json: body }),
+
+  /** Runs a proposed rule set against what is firing right now. */
+  previewRules: (body: RulesConfig & { clusterName?: string }): Promise<RulePreview> =>
+    request<RulePreview>('/rules/preview', { method: 'POST', json: body }),
 
   /** Re-measures every cluster and returns the same rows as `clusters`. */
   refreshClusters: async (): Promise<Cluster[]> =>

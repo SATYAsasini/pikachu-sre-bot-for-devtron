@@ -34,18 +34,39 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		IncludePending: q.Get("includePending") == "true",
 		Limit:          intQuery(q.Get("limit"), 100),
 	})
+	// One shape, always. This used to return a bare array on success and an
+	// object on failure, so a client could only parse one of them — ours
+	// parsed the array, silently produced [] for the object, and rendered
+	// "nothing is firing" over the top of "no alert source answered". That is
+	// absence reported as health, which is the single failure mode this
+	// product exists to avoid.
+	body := map[string]any{"alerts": orEmpty(alerts), "notes": stack.Notes}
+
+	// The cluster's rules decide what is worth showing and how urgent it is.
+	// Applied here rather than in the browser so every consumer — the UI, the
+	// chat, an MCP client — sees the same list.
+	if err == nil {
+		cfg, rerr := s.Runs.Store.LoadRules(r.Context(), clusterID)
+		if rerr == nil {
+			kept, decisions := cfg.Apply(alerts)
+			body["alerts"] = orEmpty(kept)
+			body["decisions"] = decisions
+			if n := len(alerts) - len(kept); n > 0 {
+				// Say so. A filtered list that does not admit it is filtered
+				// is the same lie as an empty one that could not be fetched.
+				body["muted"] = n
+			}
+		}
+	}
+
 	if err != nil {
 		// No alert source is a legitimate state of the world, not a server
 		// fault. The UI must be able to say "coverage unknown" rather than
 		// render a generic failure.
-		writeJSONStatus(w, http.StatusOK, map[string]any{
-			"alerts":      []monitoring.Alert{},
-			"unavailable": err.Error(),
-			"notes":       stack.Notes,
-		})
-		return
+		body["alerts"] = []monitoring.Alert{}
+		body["unavailable"] = err.Error()
 	}
-	writeJSON(w, http.StatusOK, orEmpty(alerts))
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {

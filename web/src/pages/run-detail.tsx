@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Gavel, Stethoscope } from 'lucide-react'
+import { Stethoscope } from 'lucide-react'
 import { Panel } from '@/components/common/panel'
 import { ErrorState } from '@/components/common/error-state'
 import { PanelSkeleton } from '@/components/common/skeletons'
 import { Skeleton } from '@/components/ui/skeleton'
 import { RunHeader } from '@/components/run/run-header'
-import { StageRail } from '@/components/run/stage-rail'
+import { PhaseFlow } from '@/components/run/phase-flow'
 import { DevtronGlyph } from '@/components/layout/devtron-mark'
 import { StageSection } from '@/components/run/stage-section'
 import { Conclusion } from '@/components/run/conclusion'
@@ -27,7 +27,7 @@ import { duration, humanise, pluralise } from '@/lib/format'
 import { errorMessage } from '@/lib/api'
 import { intelligencePhase, isLive, type Run } from '@/lib/types'
 
-type StageKey = 'intelligence' | 'verdict' | 'report'
+type StageKey = 'gather' | 'sre'
 
 /**
  * The run detail page: the answer first, the working underneath.
@@ -145,9 +145,9 @@ export function RunDetailPage() {
         </div>
       )}
 
-      {/* Progress across the top, not down the left: the left is navigation
-          now, and two vertical rails side by side read as one column. */}
-      <StageRail stages={stages} />
+      {/* Who did what, across the top. Two parties, and the split between
+          them is the product: Devtron gathers, we reason. */}
+      <PhaseFlow stages={stages} run={run} events={events} />
 
       <div className="flex gap-3">
         <div className="min-w-0 flex-1 space-y-3">
@@ -174,43 +174,37 @@ export function RunDetailPage() {
                 </Rise>
               ) : null}
 
-              {/* ③ The working, one line per stage. */}
+              {/* ③ The working, one section per party. */}
               <Rise>
                 <div className="space-y-2">
                   <StageSection
-                    id="stage-intelligence"
+                    id="stage-gather"
                     index={1}
-                    title="Devtron Intelligence"
+                    title="What Devtron gathered"
                     icon={<DevtronGlyph aria-hidden className="h-3 w-auto" />}
-                    state={stageState(stages, 'intelligence')}
-                    summary={summaries.intelligence}
-                    open={forced === 'intelligence' || openFor(stages, 'intelligence')}
+                    state={stageState(stages, 'gather')}
+                    summary={summaries.gather}
+                    open={forced === 'gather' || openFor(stages, 'gather')}
                   >
-                    <IntelligencePanel run={run} thinking={thinking} state={stageState(stages, 'intelligence')} />
+                    <IntelligencePanel run={run} thinking={thinking} state={stageState(stages, 'gather')} />
                   </StageSection>
 
                   <StageSection
-                    id="stage-verdict"
+                    id="stage-sre"
                     index={2}
-                    title="Our verdict"
-                    icon={<Gavel aria-hidden className="size-3.5" />}
-                    state={stageState(stages, 'verdict')}
-                    summary={summaries.verdict}
-                    open={forced === 'verdict' || openFor(stages, 'verdict')}
-                  >
-                    <VerdictPanel verdict={run?.verdict} state={stageState(stages, 'verdict')} onOpenKnowledge={setKnowledgeId} />
-                  </StageSection>
-
-                  <StageSection
-                    id="stage-report"
-                    index={3}
-                    title="SRE deep-dive"
+                    title="What we made of it"
                     icon={<Stethoscope aria-hidden className="size-3.5" />}
-                    state={stageState(stages, 'report')}
-                    summary={summaries.report}
-                    open={forced === 'report' || openFor(stages, 'report')}
+                    state={stageState(stages, 'sre')}
+                    summary={summaries.sre}
+                    open={forced === 'sre' || openFor(stages, 'sre')}
                   >
-                    <ReportPanel report={run?.report} state={stageState(stages, 'report')} onOpenKnowledge={setKnowledgeId} />
+                    {/* One agent produced both halves, so they read as one
+                        section rather than as two stages that might not have
+                        run. */}
+                    <div className="divide-y divide-border">
+                      <VerdictPanel verdict={run?.verdict} state={stageState(stages, 'sre')} onOpenKnowledge={setKnowledgeId} />
+                      <ReportPanel report={run?.report} state={stageState(stages, 'sre')} onOpenKnowledge={setKnowledgeId} />
+                    </div>
                   </StageSection>
                 </div>
               </Rise>
@@ -249,15 +243,21 @@ function openFor(stages: Stage[], key: string): boolean {
  * step count for the deep-dive. If a line here is not worth reading, the
  * stage below it is not worth opening.
  */
+/**
+ * The one line each phase reduces to.
+ *
+ * If a line here is not worth reading, the section below it is not worth
+ * opening.
+ */
 function stageSummaries(run: Run | undefined, thinkingCount: number) {
   const intel = run?.intelligence
   const phase = intelligencePhase(run)
   const verdict = run?.verdict
   const report = run?.report
 
-  const intelligence =
+  const gather =
     phase === 'failed'
-      ? `Errored — the run continued on facts alone`
+      ? 'Devtron errored — we continued on facts alone'
       : phase === 'not_started'
         ? 'Not started'
         : [
@@ -269,27 +269,20 @@ function stageSummaries(run: Run | undefined, thinkingCount: number) {
 
   const claims = verdict?.claims ?? []
   const contradicted = claims.filter((c) => c.status === 'contradicted').length
-  const verdictLine = !verdict
-    ? 'Nothing yet'
+
+  const sre = !report
+    ? verdict
+      ? 'Graded, still writing remediation'
+      : 'Nothing yet'
     : [
-        humanise(String(verdict.verdict)),
-        pluralise(claims.length, 'claim') + ' checked',
+        verdict ? humanise(String(verdict.verdict)) : null,
+        claims.length > 0 ? `${pluralise(claims.length, 'claim')} checked` : null,
         contradicted > 0 ? `${contradicted} contradicted` : null,
-        (verdict.gaps ?? []).length > 0 ? pluralise((verdict.gaps ?? []).length, 'gap') : null,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-
-  const reportLine = !report
-    ? 'Nothing yet'
-    : [
-        report.agrees ? 'Agrees with the first pass' : 'Disagrees with the first pass',
         pluralise((report.remediation ?? []).length, 'step'),
-        pluralise((report.evidence ?? []).length, 'piece') + ' of evidence',
-        (report.unknowns ?? []).length > 0 ? pluralise((report.unknowns ?? []).length, 'unknown') : null,
+        `${pluralise((report.evidence ?? []).length, 'piece')} of evidence`,
       ]
         .filter(Boolean)
         .join(' · ')
 
-  return { intelligence, verdict: verdictLine, report: reportLine }
+  return { gather, sre }
 }

@@ -343,7 +343,7 @@ export const EVENT_TYPES = [
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 
-export type AgentName = 'judge' | 'sre' | 'intelligence' | string
+export type AgentName = 'sre' | 'intelligence' | string
 
 /**
  * Structured failure on a `tool_result` event.

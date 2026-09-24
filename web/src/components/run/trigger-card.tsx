@@ -54,7 +54,7 @@ export function TriggerCard({
   onOpenKnowledge,
 }: {
   run: Run
-  /** From the verdict, once the judge has identified what this is about. */
+  /** From the verdict, once the agent has identified what this is about. */
   component: IdentifiedComponent | null | undefined
   onOpenKnowledge: (componentId: string) => void
 }) {
@@ -221,7 +221,7 @@ function Pairs({ title, pairs, mono }: { title: string; pairs: [string, string][
 /**
  * What the run turned out to be about.
  *
- * Absent until the judge names it, and it says so rather than reserving an
+ * Absent until the agent names it, and it says so rather than reserving an
  * empty row — an identification that has not happened yet is different from
  * one that came back `unknown`.
  */

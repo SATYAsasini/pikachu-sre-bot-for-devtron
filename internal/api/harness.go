@@ -15,7 +15,7 @@ import (
 // the UI. A hand-copied diagram is wrong within a week of the first tool
 // being added, and a diagram nobody trusts is worse than none.
 func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
-	judge, sre := agents.AgentNames()
+	sre := agents.AgentName()
 	allowed := agents.SREToolNames()
 
 	// Resolve the allowlist against the registry so the response carries each
@@ -57,32 +57,15 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 		},
 		"agents": []map[string]any{
 			{
-				"name":  judge,
-				"order": 1,
-				"model": s.Cfg.Models.Fast,
-				"role":  "Grades Devtron Intelligence's analysis against the fact pack and names the failing component.",
-				// Deliberate: grading an argument against a fact pack it
-				// already holds does not need a cluster, and tools would turn
-				// a two-second step into a second investigation.
-				"tools":     []string{},
-				"outputKey": "verdict",
-				"reads":     []string{"alert", "scope", "facts", "intelligence"},
-				// The prompt is the product, so it is shown rather than
-				// described. It is the file the binary embedded, not a copy.
-				"instruction": prompts.Judge,
-			},
-			{
 				"name":        sre,
-				"order":       2,
+				"order":       1,
 				"model":       s.Cfg.Models.Strong,
-				"role":        "Goes deeper where the judge found gaps and writes expert remediation.",
+				"role":        "Verifies Devtron's first pass against the facts and writes expert remediation.",
 				"tools":       toolRows,
 				"toolsets":    []string{"skilltoolset (knowledge packs, progressive disclosure)"},
-				"outputKey":   "report",
-				"reads":       []string{"alert", "scope", "facts", "intelligence", "verdict"},
+				"outputKey":   "analysis",
+				"reads":       []string{"alert", "scope", "facts", "intelligence"},
 				"instruction": prompts.SRE,
-				// The stage that can be skipped, and why.
-				"skippedWhen": "the judge returns supported, contradicts nothing and asks for no further checks",
 			},
 		},
 		"budget": map[string]any{
@@ -123,8 +106,7 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 			{"step": "discovery", "kind": "deterministic", "what": "Find Prometheus or VictoriaMetrics, Alertmanager or vmalert, per cluster."},
 			{"step": "facts", "kind": "deterministic", "what": "Gather the fact pack from the orchestrator before any model call."},
 			{"step": "intelligence", "kind": "devtron", "what": "Devtron's own first pass over /proxy/athena/intelligence."},
-			{"step": judge, "kind": "agent", "what": "Verify the first pass. No tools."},
-			{"step": sre, "kind": "agent", "what": "Deepen it and write remediation. Read-only tools."},
+			{"step": sre, "kind": "agent", "what": "Verify that pass against the facts and write remediation. Read-only tools."},
 		},
 		// How each Devtron API surface became a tool the model can call. This
 		// is the part of building an agent that nobody budgets for: a REST
@@ -189,11 +171,10 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 		// "could this be built from a UI?" — the tree could; these could not,
 		// yet.
 		"orchestration": []map[string]any{
-			{"layer": "preflight", "what": "Refuse the run when the cluster cannot be read, before spending a Devtron call and two models on it.", "declarative": false},
+			{"layer": "preflight", "what": "Refuse the run when the cluster cannot be read, before spending a Devtron call and a model on it.", "declarative": false},
 			{"layer": "discovery", "what": "Find the monitoring stack per cluster and pick a base path by probing three candidates.", "declarative": false},
 			{"layer": "fact pack", "what": "Gather deterministic facts before any model call, so the first agent needs no tools.", "declarative": false},
 			{"layer": "guard", "what": "Per-agent tool allowlist, budget metering, identical-call refusal, and a ledger entry per call.", "declarative": true},
-			{"layer": "skip", "what": "Skip the deep dive when the judge contradicted nothing and asked for no further checks.", "declarative": true},
 			{"layer": "redaction", "what": "Scrub secrets out of every tool argument and result before it reaches a model or the ledger.", "declarative": true},
 			{"layer": "envelope", "what": "One result shape for every tool: summary, data, error, truncated, artifact ref.", "declarative": true},
 		},
@@ -266,7 +247,7 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 			"No kubeconfig. Every cluster read goes through the Devtron orchestrator.",
 			"Read-only. There are no write tools and none may be added.",
 			"Every tool call and model call passes the guard: allowlist, budget, no-identical-repeat, ledger.",
-			"The two agents never speak directly; they communicate only through ADK session state.",
+			"One agent, one pass. Verification and remediation are the same model call, so there is no handoff to lose.",
 		},
 	})
 }

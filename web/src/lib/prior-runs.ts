@@ -69,13 +69,13 @@ function summarise(run: Run): PriorRun | null {
 
   const action = report?.remediation?.[0]?.action?.trim() || null
 
-  // A report with no cause and no remediation is what a skipped deep dive
-  // leaves behind: the judge settled it and the third stage never ran.
+  // A report with no cause and nothing to do is a run that found the first
+  // pass sound and had no remediation to add. Worth marking, because it looks
+  // identical to an empty one otherwise.
   const settledEarly = Boolean(report) && !report?.correctedRootCause?.trim() && (report?.remediation ?? []).length === 0
 
-  const stagesRan = [Boolean(run.intelligence?.analysis), Boolean(verdict), Boolean(report) && !settledEarly].filter(
-    Boolean,
-  ).length
+  // Two phases now, not three: Devtron gathers, we reason.
+  const stagesRan = [Boolean(run.intelligence?.analysis), Boolean(report)].filter(Boolean).length
 
   return { run, answer, action, stagesRan, settledEarly }
 }

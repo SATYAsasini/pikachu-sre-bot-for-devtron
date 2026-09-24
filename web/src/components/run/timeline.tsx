@@ -18,7 +18,6 @@ import {
 import type { RunEvent } from '@/lib/types'
 
 const AGENT_TONE: Record<string, string> = {
-  judge: 'text-warn',
   sre: 'text-ok',
   intelligence: 'text-unknown',
 }

@@ -189,7 +189,6 @@ func (w *Worker) execute(parent context.Context, runID string) {
 
 	// 4. The two agents.
 	out, err := w.Pipeline.Run(ctx, agents.Input{
-		Depth:        string(run.Options.Depth),
 		RunID:        runID,
 		UserID:       run.Scope.ClusterName,
 		Alert:        rawOrNil(run.Trigger.Alert),

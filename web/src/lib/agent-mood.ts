@@ -56,9 +56,6 @@ export function agentStateOf(run: Run | undefined, events: readonly RunEvent[]):
   if (actor === 'intelligence') {
     return { mood: 'thinking', actor, says: 'Devtron is taking the first pass' }
   }
-  if (actor === 'judge') {
-    return { mood: 'thinking', actor, says: 'Grading that analysis claim by claim' }
-  }
   if (actor === 'sre') {
     return { mood: 'working', actor, says: 'Digging into what it missed' }
   }

@@ -12,7 +12,7 @@ export type StageState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped' |
 export interface Stage {
   /** Why this stage never ran, when it was skipped on purpose. */
   skippedWhy?: string
-  key: 'intelligence' | 'verdict' | 'report'
+  key: 'gather' | 'sre'
   /** Ordinal shown in the UI; the three outputs are always read in this order. */
   index: 1 | 2 | 3
   title: string
@@ -33,13 +33,23 @@ function sawEvent(events: readonly RunEvent[], type: string, agent?: string): bo
  * a page loaded mid-run has events but no verdict, and a page loaded after the
  * run has a verdict but may never have seen the events.
  */
+/**
+ * Two phases, because there are two agents.
+ *
+ * This used to derive three: Devtron's first pass, a judge, and the SRE deep
+ * dive. The judge is gone — it and the SRE are one model call now — and with
+ * it goes the failure mode where a run that died early showed two stages that
+ * had never started and a third labelled "not needed".
+ *
+ * What is left maps to who does the work: Devtron gathers, we reason.
+ */
 export function deriveStages(run: Run | undefined, events: readonly RunEvent[]): Stage[] {
   const terminal = run ? isTerminal(run.status) : false
 
-  // `intelligence` is null until Devtron's first pass starts, then arrives with
-  // analysis:"" while it streams, then fills. Four states, not two.
+  // `intelligence` is null until Devtron's first pass starts, then arrives
+  // with analysis:"" while it streams, then fills. Four states, not two.
   const phase = intelligencePhase(run)
-  const intelligence: StageState = !run
+  const gather: StageState = !run
     ? 'waiting'
     : phase === 'failed'
       ? 'failed'
@@ -53,57 +63,36 @@ export function deriveStages(run: Run | undefined, events: readonly RunEvent[]):
             ? 'not_run'
             : 'waiting'
 
-  const verdict: StageState = !run
-    ? 'waiting'
-    : run.verdict
-      ? 'done'
-      : sawEvent(events, 'agent_start', 'judge')
-        ? sawEvent(events, 'agent_end', 'judge')
-          ? terminal
-            ? 'failed'
-            : 'running'
-          : 'running'
-        : terminal
-          ? 'not_run'
-          : 'waiting'
-
-  // A deliberate skip is not the same as never getting there.
-  const skipEvent = events.find((e) => e.type === 'agent_skipped' && e.agent === 'sre')
-  const skippedWhy = skipEvent
-    ? ((skipEvent.payload as { reason?: string } | undefined)?.reason ?? 'not needed')
-    : undefined
-
-  const report: StageState = skipEvent
-    ? 'skipped'
-    : !run
+  const sre: StageState = !run
     ? 'waiting'
     : run.report
       ? 'done'
       : sawEvent(events, 'agent_start', 'sre')
-        ? sawEvent(events, 'agent_end', 'sre')
-          ? terminal
-            ? 'failed'
-            : 'running'
+        ? terminal
+          ? 'failed'
           : 'running'
         : terminal
           ? 'not_run'
           : 'waiting'
 
   return [
-    { key: 'intelligence', index: 1, title: 'Devtron Intelligence', subtitle: 'The first-pass analysis we are here to check', state: intelligence },
-    { key: 'verdict', index: 2, title: 'Our verdict', subtitle: 'Judge agent, claim by claim, against deterministic facts', state: verdict },
     {
-      key: 'report',
-      index: 3,
-      title: 'SRE deep-dive',
-      subtitle: skippedWhy ?? 'Evidence, corrected root cause and ranked remediation',
-      state: report,
-      skippedWhy,
+      key: 'gather',
+      index: 1,
+      title: 'Gather',
+      subtitle: 'Cluster facts, monitoring discovery and Devtron\u2019s first pass',
+      state: gather,
+    },
+    {
+      key: 'sre',
+      index: 2,
+      title: 'SRE',
+      subtitle: 'Grade that pass against the facts, then write remediation',
+      state: sre,
     },
   ]
 }
 
-/** Thinking lines pulled out of the ledger, in order. */
 export function thinkingTrail(events: readonly RunEvent[]): string[] {
   return events
     .filter((e) => e.type === 'intelligence_thinking')

@@ -68,14 +68,14 @@ export function VerdictPanel({
         {!verdict ? (
           state === 'running' ? (
             <div className="space-y-2 py-1">
-              <p className="text-xs text-muted-foreground">The judge is checking the claims. This fills in as soon as it lands.</p>
+              <p className="text-xs text-muted-foreground">Reading Devtron's analysis claim by claim. This fills in as soon as it lands.</p>
               <TextSkeleton lines={4} />
             </div>
           ) : state === 'skipped' || state === 'failed' ? (
             <EmptyState
               icon={Gavel}
               title="No verdict was reached"
-              line="The run ended before the judge could return one. There is nothing here to read into — it simply did not get that far."
+              line="The run ended before the agent returned one. There is nothing here to read into — it simply did not get that far."
             />
           ) : (
             <div className="space-y-2 py-1">

@@ -223,8 +223,8 @@ function Pipeline({ h }: { h: Harness }) {
         ))}
       </ol>
       <Text tone="fine" className="mt-1.5">
-        The two agents never call each other. The judge writes <code className="font-mono">verdict</code> into ADK
-        session state and the SRE reads it — that is the entire protocol between them.
+        Three of these are deterministic and run before any model is called, which is what lets the single agent
+        that follows spend its budget on judgement rather than on gathering.
       </Text>
     </section>
   )

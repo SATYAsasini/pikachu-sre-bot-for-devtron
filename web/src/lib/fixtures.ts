@@ -482,10 +482,10 @@ function seedEvents(run: Run): RunEvent[] {
     out.push({ seq: seq++, at: at(40), type: 'intelligence_analysis', agent: 'intelligence', payload: { chars: run.intelligence?.analysis.length ?? 0 } })
   }
   if (run.verdict) {
-    out.push({ seq: seq++, at: at(41), type: 'agent_start', agent: 'judge', payload: {} })
-    out.push({ seq: seq++, at: at(44), type: 'tool_call', agent: 'judge', payload: { tool: 'k8s.get', args: { kind: 'Pod', namespace: run.scope.namespace } } })
-    out.push({ seq: seq++, at: at(46), type: 'tool_result', agent: 'judge', payload: { tool: 'k8s.get', ok: true, summary: '3 pods, 1 with restartCount=14' } })
-    out.push({ seq: seq++, at: at(52), type: 'agent_end', agent: 'judge', payload: { verdict: run.verdict.verdict } })
+    out.push({ seq: seq++, at: at(41), type: 'agent_start', agent: 'sre', payload: {} })
+    out.push({ seq: seq++, at: at(44), type: 'tool_call', agent: 'sre', payload: { tool: 'k8s.get', args: { kind: 'Pod', namespace: run.scope.namespace } } })
+    out.push({ seq: seq++, at: at(46), type: 'tool_result', agent: 'sre', payload: { tool: 'k8s.get', ok: true, summary: '3 pods, 1 with restartCount=14' } })
+    out.push({ seq: seq++, at: at(52), type: 'agent_end', agent: 'sre', payload: { verdict: run.verdict.verdict } })
   }
   if (run.report) {
     out.push({ seq: seq++, at: at(53), type: 'agent_start', agent: 'sre', payload: {} })
@@ -532,15 +532,15 @@ function script(): ScriptStep[] {
     event: { type: 'intelligence_analysis', agent: 'intelligence', payload: { chars: SAMPLE_ANALYSIS.length } },
     patch: (r) => { r.intelligence = { ...SAMPLE_INTELLIGENCE, requestId: 'oneshot-live01' } },
   })
-  steps.push({ afterMs: 8600, event: { type: 'agent_start', agent: 'judge', payload: {} } })
-  steps.push({ afterMs: 9200, event: { type: 'model_call', agent: 'judge', payload: { tokens: 8_140 } }, patch: (r) => { r.usage = { ...r.usage, modelCalls: r.usage.modelCalls + 1, modelTokens: r.usage.modelTokens + 8_140 } } })
-  steps.push({ afterMs: 10_000, event: { type: 'tool_call', agent: 'judge', payload: { tool: 'k8s.get', args: { kind: 'Pod', namespace: 'payments' } } }, patch: (r) => { r.usage = { ...r.usage, toolCalls: r.usage.toolCalls + 1 } } })
-  steps.push({ afterMs: 11_100, event: { type: 'tool_result', agent: 'judge', payload: { tool: 'k8s.get', ok: true, summary: 'redis-master-0 restartCount=14, lastState.terminated.reason=OOMKilled' } } })
-  steps.push({ afterMs: 12_000, event: { type: 'tool_call', agent: 'judge', payload: { tool: 'prom.query', args: { expr: 'redis_evicted_keys_total' } } }, patch: (r) => { r.usage = { ...r.usage, toolCalls: r.usage.toolCalls + 1 } } })
-  steps.push({ afterMs: 13_200, event: { type: 'tool_result', agent: 'judge', payload: { tool: 'prom.query', ok: true, summary: '0 across all instances for 7d' } } })
+  steps.push({ afterMs: 8600, event: { type: 'agent_start', agent: 'sre', payload: {} } })
+  steps.push({ afterMs: 9200, event: { type: 'model_call', agent: 'sre', payload: { tokens: 8_140 } }, patch: (r) => { r.usage = { ...r.usage, modelCalls: r.usage.modelCalls + 1, modelTokens: r.usage.modelTokens + 8_140 } } })
+  steps.push({ afterMs: 10_000, event: { type: 'tool_call', agent: 'sre', payload: { tool: 'k8s.get', args: { kind: 'Pod', namespace: 'payments' } } }, patch: (r) => { r.usage = { ...r.usage, toolCalls: r.usage.toolCalls + 1 } } })
+  steps.push({ afterMs: 11_100, event: { type: 'tool_result', agent: 'sre', payload: { tool: 'k8s.get', ok: true, summary: 'redis-master-0 restartCount=14, lastState.terminated.reason=OOMKilled' } } })
+  steps.push({ afterMs: 12_000, event: { type: 'tool_call', agent: 'sre', payload: { tool: 'prom.query', args: { expr: 'redis_evicted_keys_total' } } }, patch: (r) => { r.usage = { ...r.usage, toolCalls: r.usage.toolCalls + 1 } } })
+  steps.push({ afterMs: 13_200, event: { type: 'tool_result', agent: 'sre', payload: { tool: 'prom.query', ok: true, summary: '0 across all instances for 7d' } } })
   steps.push({
     afterMs: 14_500,
-    event: { type: 'agent_end', agent: 'judge', payload: { verdict: 'partly_supported' } },
+    event: { type: 'agent_end', agent: 'sre', payload: { verdict: 'partly_supported' } },
     patch: (r) => { r.verdict = SAMPLE_VERDICT },
   })
   steps.push({ afterMs: 15_000, event: { type: 'agent_start', agent: 'sre', payload: {} } })

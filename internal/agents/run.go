@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
-	"google.golang.org/adk/agent/workflowagents/sequentialagent"
 	"google.golang.org/adk/artifact"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
@@ -30,10 +28,7 @@ const appName = "devtron-sre-agent"
 
 // The two agents. There are exactly two, they run in order, and they speak
 // only through session state: judge writes "verdict", sre reads it.
-const (
-	agentJudge = "judge"
-	agentSRE   = "sre"
-)
+const agentSRE = "sre"
 
 // sreToolNames is the allowlist bound to the SRE agent. The judge is bound
 // nothing at all, on purpose: it grades an argument against a fact pack it
@@ -66,9 +61,6 @@ type Pipeline struct {
 
 // Input is everything the agents are given. Nothing else reaches them.
 type Input struct {
-	// Depth is the operator's choice for this run: auto lets the judge decide
-	// whether the deep dive happens, quick forbids it, deep forces it.
-	Depth        string
 	RunID        string
 	UserID       string
 	Alert        any
@@ -90,7 +82,7 @@ func (p *Pipeline) Run(ctx context.Context, in Input, deps *tools.Deps, ledger L
 	budget := &Budget{MaxToolCalls: p.Budget.MaxToolCalls, MaxModelTokens: p.Budget.MaxModelTokens}
 	guard := NewGuard(budget, ledger, deps.RedactString)
 
-	root, err := p.build(ctx, deps, guard, in.Depth)
+	root, err := p.build(ctx, deps, guard)
 	if err != nil {
 		return Output{Status: runs.StatusFailed}, err
 	}
@@ -171,26 +163,14 @@ func (p *Pipeline) Run(ctx context.Context, in Input, deps *tools.Deps, ledger L
 		out.Usage = usageOf(budget)
 		return out, fmt.Errorf("read session state: %w", err)
 	}
-	st := got.Session.State()
-	out.Verdict = structured(st, "verdict")
-	out.Report = structured(st, "report")
+	// One agent, one object. It is split back into verdict and report here
+	// because that is how the API, the database and every panel already read
+	// it — the merge is in how the answer is produced, not in how it is
+	// stored.
+	out.Verdict, out.Report = splitAnalysis(structured(got.Session.State(), "analysis"))
 
-	if out.Verdict != nil {
-		if seq, err := ledger(ctx, runs.EvFinding, agentJudge, map[string]any{"kind": "verdict"}); err == nil {
-			_ = seq
-		}
-	}
 	if out.Report != nil {
 		_, _ = ledger(ctx, runs.EvFinding, agentSRE, map[string]any{"kind": "report"})
-	}
-	if out.Report == nil {
-		// A deliberately skipped deep dive leaves no report in session state,
-		// exactly as a crashed one does. Only the guard knows the difference,
-		// and without asking it a settled, correct investigation was being
-		// marked failed.
-		if why, skipped := guard.SkippedReason(agentSRE); skipped {
-			out.Report = skippedReportJSON(why)
-		}
 	}
 	if out.Status == runs.StatusSucceeded && out.Report == nil {
 		// The tree ran but produced nothing usable. Succeeding here would be
@@ -201,31 +181,23 @@ func (p *Pipeline) Run(ctx context.Context, in Input, deps *tools.Deps, ledger L
 	return out, nil
 }
 
-// build assembles judge -> sre.
-func (p *Pipeline) build(ctx context.Context, deps *tools.Deps, guard *Guard, depth string) (agent.Agent, error) {
-	fast, err := p.Models.Get(ctx, "fast")
-	if err != nil {
-		return nil, fmt.Errorf("judge model: %w", err)
-	}
+// build assembles the one agent this pipeline runs.
+//
+// It used to be a sequentialagent over a judge and an SRE. The judge existed
+// to grade Devtron's analysis cheaply before spending the strong model, and
+// in practice it bought nothing: its verdict was almost never settled enough
+// to skip the dive, so every run paid for two models to produce one answer,
+// and a run that died before the second agent showed two stages that had
+// never started.
+//
+// One agent now verifies and remediates in a single pass, emitting both in
+// one object. That deletes the tree, the second model, the skip callback and
+// the state handoff between them — and the output is unchanged, because the
+// verdict was always going to be read next to the report anyway.
+func (p *Pipeline) build(ctx context.Context, deps *tools.Deps, guard *Guard) (agent.Agent, error) {
 	strong, err := p.Models.Get(ctx, "strong")
 	if err != nil {
 		return nil, fmt.Errorf("sre model: %w", err)
-	}
-
-	guard.Allow(agentJudge, nil)
-	judge, err := llmagent.New(llmagent.Config{
-		Name:                     agentJudge,
-		Description:              "Verifies Devtron Intelligence's analysis against the fact pack and names the failing component.",
-		Model:                    fast,
-		InstructionProvider:      instruction(prompts.Judge),
-		OutputKey:                "verdict",
-		DisallowTransferToParent: true,
-		DisallowTransferToPeers:  true,
-		BeforeModelCallbacks:     []llmagent.BeforeModelCallback{guard.BeforeModel(agentJudge)},
-		AfterModelCallbacks:      []llmagent.AfterModelCallback{guard.AfterModel(agentJudge)},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build judge: %w", err)
 	}
 
 	var bound []adktool.Tool
@@ -255,132 +227,21 @@ func (p *Pipeline) build(ctx context.Context, deps *tools.Deps, guard *Guard, de
 	}
 	guard.Allow(agentSRE, allowed)
 
-	sre, err := llmagent.New(llmagent.Config{
+	return llmagent.New(llmagent.Config{
 		Name:                     agentSRE,
-		Description:              "Goes deeper where the judge found gaps and writes expert remediation.",
+		Description:              "Verifies Devtron's first pass against the facts and writes expert remediation.",
 		Model:                    strong,
 		Tools:                    bound,
 		Toolsets:                 toolsets,
 		InstructionProvider:      instruction(prompts.SRE),
-		OutputKey:                "report",
+		OutputKey:                "analysis",
 		DisallowTransferToParent: true,
 		DisallowTransferToPeers:  true,
-		// This was written and never attached, which is why every run went
-		// through all three stages however settled the verdict was.
-		BeforeAgentCallbacks: []agent.BeforeAgentCallback{skipWhenSettled(guard, depth)},
-		BeforeToolCallbacks:  []llmagent.BeforeToolCallback{guard.BeforeTool(agentSRE)},
-		AfterToolCallbacks:   []llmagent.AfterToolCallback{guard.AfterTool(agentSRE)},
-		BeforeModelCallbacks: []llmagent.BeforeModelCallback{guard.BeforeModel(agentSRE)},
-		AfterModelCallbacks:  []llmagent.AfterModelCallback{guard.AfterModel(agentSRE)},
+		BeforeToolCallbacks:      []llmagent.BeforeToolCallback{guard.BeforeTool(agentSRE)},
+		AfterToolCallbacks:       []llmagent.AfterToolCallback{guard.AfterTool(agentSRE)},
+		BeforeModelCallbacks:     []llmagent.BeforeModelCallback{guard.BeforeModel(agentSRE)},
+		AfterModelCallbacks:      []llmagent.AfterModelCallback{guard.AfterModel(agentSRE)},
 	})
-	if err != nil {
-		return nil, fmt.Errorf("build sre: %w", err)
-	}
-
-	return sequentialagent.New(sequentialagent.Config{AgentConfig: agent.Config{
-		Name:        "investigation",
-		Description: "Verify Devtron Intelligence, then deepen it into SRE remediation.",
-		SubAgents:   []agent.Agent{judge, sre},
-	}})
-}
-
-// settledVerdict is the shape of the judge's output that decides whether the
-// deep dive is worth running.
-type settledVerdict struct {
-	Verdict string `json:"verdict"`
-	Claims  []struct {
-		Status string `json:"status"`
-	} `json:"claims"`
-	Gaps       []string `json:"gaps"`
-	NextChecks []string `json:"nextChecks"`
-}
-
-// skipWhenSettled stops the SRE agent before it starts when the judge found
-// nothing left to establish.
-//
-// The bar is deliberately high: fully supported, no gaps named, no checks
-// requested, and not one claim contradicted or unverifiable. Anything less
-// and the deep dive runs, because a wrong answer delivered quickly is the
-// worse failure.
-func skipWhenSettled(guard *Guard, depth string) agent.BeforeAgentCallback {
-	return func(cc agent.CallbackContext) (*genai.Content, error) {
-		// "deep" means the operator asked for the dive regardless of how
-		// settled the verdict looks, so the skip never applies.
-		if depth == "deep" {
-			return nil, nil
-		}
-		// "quick" stops after the verdict, settled or not.
-		if depth == "quick" {
-			guard.NoteSkipped(agentSRE, "the run was set to quick: verify only, no deep dive")
-			return quickReport(), nil
-		}
-		raw, err := cc.State().Get("verdict")
-		if err != nil || raw == nil {
-			return nil, nil // no verdict: run the deep dive
-		}
-		v := parseVerdict(raw)
-		if v == nil {
-			return nil, nil
-		}
-		if !settles(v) {
-			return nil, nil
-		}
-		guard.NoteSkipped(agentSRE, "the judge contradicted nothing and asked for no further checks")
-		return skippedReport(settledWhy(v)), nil
-	}
-}
-
-// settles reports whether the judge left anything for the deep dive to do.
-//
-// The bar used to be a flawless verdict: supported, no gaps, no next checks,
-// and not one claim less than supported. Real verdicts almost never look like
-// that — there is nearly always one unverifiable claim — so the dive ran every
-// single time and every run paid for three stages.
-//
-// What actually matters is whether anything is left to establish. A
-// contradicted claim means the first pass is wrong, so the dive must run. A
-// next check is the judge explicitly asking for one. An unverifiable claim is
-// neither: it is something no amount of further digging in this cluster will
-// settle, and it belongs in unknowns rather than in another round of tools.
-func settles(v *settledVerdict) bool {
-	if v == nil || v.Verdict != "supported" || len(v.NextChecks) > 0 {
-		return false
-	}
-	for _, c := range v.Claims {
-		if c.Status == "contradicted" {
-			return false
-		}
-	}
-	return true
-}
-
-// settledWhy is the sentence a skipped run carries in place of a deep dive.
-func settledWhy(v *settledVerdict) string {
-	why := "The judge found nothing contradicted and asked for no further checks, so the deep dive was not needed."
-	if v != nil && len(v.Gaps) > 0 {
-		why += " It noted " + strconv.Itoa(len(v.Gaps)) + " gap(s), none of which changed what to do."
-	}
-	return why
-}
-
-func quickReport() *genai.Content {
-	return skippedReport("This run was set to quick, so verification ran but the deep dive did not.")
-}
-
-func skippedReport(why string) *genai.Content {
-	return genai.NewContentFromText(string(skippedReportJSON(why)), genai.RoleModel)
-}
-
-// skippedReportJSON is the report a run carries when the deep dive was
-// deliberately not run. It agrees, because the judge already found nothing to
-// disagree with, and it says why in sreNotes rather than leaving the reader to
-// wonder what happened to the third stage.
-func skippedReportJSON(why string) json.RawMessage {
-	return json.RawMessage(
-		`{"agrees":true,"correctedRootCause":"","confidence":0.0,` +
-			`"evidence":[],"remediation":[],` +
-			`"sreNotes":` + quote(why) + `,` +
-			`"unknowns":[],"skipped":true}`)
 }
 
 func quote(s string) string {
@@ -391,27 +252,27 @@ func quote(s string) string {
 	return string(b)
 }
 
-func parseVerdict(raw any) *settledVerdict {
-	var b []byte
-	switch t := raw.(type) {
-	case string:
-		b = extractJSON(t)
-	case json.RawMessage:
-		b = t
-	default:
-		var err error
-		if b, err = json.Marshal(t); err != nil {
-			return nil
-		}
+// splitAnalysis pulls the two halves out of the single object the agent
+// emits. A missing or unparseable verdict is not fatal: the remediation is
+// the part someone acts on, and withholding it because the grading half was
+// malformed would be the wrong trade.
+func splitAnalysis(raw json.RawMessage) (verdict, report json.RawMessage) {
+	if len(raw) == 0 {
+		return nil, nil
 	}
-	if len(b) == 0 {
-		return nil
+	var both struct {
+		Verdict json.RawMessage `json:"verdict"`
+		Report  json.RawMessage `json:"report"`
 	}
-	var v settledVerdict
-	if err := json.Unmarshal(b, &v); err != nil {
-		return nil
+	if err := json.Unmarshal(raw, &both); err != nil {
+		return nil, nil
 	}
-	return &v
+	if len(both.Report) == 0 {
+		// An agent that emitted a bare report rather than the wrapper still
+		// produced something usable.
+		return both.Verdict, raw
+	}
+	return both.Verdict, both.Report
 }
 
 // instruction renders a prompt template against session state at invocation
@@ -518,5 +379,5 @@ func SREToolNames() []string {
 	return out
 }
 
-// AgentNames are the two agents, in the order they run.
-func AgentNames() (judge, sre string) { return agentJudge, agentSRE }
+// AgentName is the one agent this pipeline runs.
+func AgentName() string { return agentSRE }

@@ -139,7 +139,7 @@ function Answered({ prior }: { prior: PriorRun }) {
           {relativeTime(prior.run.finishedAt ?? prior.run.createdAt)}
         </span>
         <span className="ml-auto shrink-0 text-[0.625rem] text-muted-foreground">
-          {prior.settledEarly ? `${prior.stagesRan} of 3 · settled early` : `${prior.stagesRan} of 3 stages`}
+          {prior.settledEarly ? `${prior.stagesRan} of 2 · nothing to act on` : `${prior.stagesRan} of 2 phases`}
         </span>
         <ChevronDown
           aria-hidden

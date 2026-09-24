@@ -25,7 +25,7 @@ export function Conclusion({
 }: {
   verdict: Verdict | null
   report: Report | null
-  onJump: (stage: 'intelligence' | 'verdict' | 'report') => void
+  onJump: (stage: 'gather' | 'sre') => void
 }) {
   const still = useReducedMotion()
   const [openStep, setOpenStep] = useState(false)
@@ -142,9 +142,8 @@ export function Conclusion({
         </Text>
         {(
           [
-            ['intelligence', 'first pass'],
-            ['verdict', `${verdict?.claims?.length ?? 0} claims`],
-            ['report', `${report?.remediation?.length ?? 0} steps · ${report?.evidence?.length ?? 0} evidence`],
+            ['gather', 'what Devtron gathered'],
+            ['sre', `${verdict?.claims?.length ?? 0} claims · ${report?.remediation?.length ?? 0} steps`],
           ] as const
         ).map(([key, label]) => (
           <button

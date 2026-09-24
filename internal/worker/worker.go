@@ -14,6 +14,7 @@ import (
 	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
 	"github.com/devtron-labs/devtron-sre-agent/internal/knowledge"
 	"github.com/devtron-labs/devtron-sre-agent/internal/monitoring"
+	"github.com/devtron-labs/devtron-sre-agent/internal/rules"
 	"github.com/devtron-labs/devtron-sre-agent/internal/runs"
 	"github.com/devtron-labs/devtron-sre-agent/internal/tools"
 )
@@ -33,6 +34,10 @@ type Worker struct {
 	Pipeline   *agents.Pipeline
 	Redact     func(string) string
 	Log        *slog.Logger
+
+	// PublicURL is where this deployment is reachable, for links in
+	// notifications. Empty simply omits the link.
+	PublicURL string
 
 	Concurrency         int
 	IntelligenceTimeout time.Duration
@@ -224,6 +229,10 @@ func (w *Worker) execute(parent context.Context, runID string) {
 	if out.Status == runs.StatusFailed && out.Report == nil {
 		msg = "the agents produced no usable report"
 	}
+	// Tell the channel what we found. After Finish rather than before, so a
+	// notification never describes a run that then failed to record.
+	w.notifyFinding(ctx, run, alert, out, log)
+
 	if err := w.Runs.Finish(ctx, runID, out.Status, msg, usage); err != nil {
 		log.Error("could not finish run", "err", err)
 	}
@@ -362,4 +371,96 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// notifyFinding posts the conclusion of a run to the cluster's channel.
+//
+// This is the only notification the product sends. Every monitoring tool can
+// already say something broke; what none of them say is "we looked into it,
+// here is the cause and the first thing to do" — arriving while somebody is
+// still reading the alert.
+//
+// It is best-effort by design. A webhook that is down must never fail a run
+// or block the next one: the finding is already saved, and the channel is a
+// convenience on top of it.
+func (w *Worker) notifyFinding(ctx context.Context, run *runs.Run, alert *monitoring.Alert, out agents.Output, log *slog.Logger) {
+	if out.Report == nil {
+		return
+	}
+	cfg, err := w.Runs.Store.LoadRules(ctx, run.Scope.ClusterID)
+	if err != nil {
+		return
+	}
+
+	// Priority comes from the same rules that decide the alert list, so what
+	// arrives in Slack matches what is on screen.
+	priority := rules.DefaultPriority
+	if alert != nil {
+		priority = cfg.Decide(*alert).Priority
+	}
+	if !cfg.Notify.Wants(priority) {
+		return
+	}
+
+	var rep struct {
+		Agrees             bool   `json:"agrees"`
+		CorrectedRootCause string `json:"correctedRootCause"`
+		SreNotes           string `json:"sreNotes"`
+		Remediation        []struct {
+			Action string `json:"action"`
+			Risk   string `json:"risk"`
+		} `json:"remediation"`
+	}
+	if json.Unmarshal(out.Report, &rep) != nil {
+		return
+	}
+
+	subject := "a question"
+	if alert != nil {
+		subject = alert.Name
+		if alert.Resource != "" {
+			subject += " on " + alert.Resource
+		}
+	}
+
+	cause := strings.TrimSpace(rep.CorrectedRootCause)
+	if cause == "" {
+		cause = strings.TrimSpace(rep.SreNotes)
+	}
+	if cause == "" {
+		// Nothing worth saying. Posting "investigated, no conclusion" into a
+		// channel is how a channel gets muted.
+		return
+	}
+
+	body := cause
+	if len(rep.Remediation) > 0 {
+		body += "\n\nDo first: " + rep.Remediation[0].Action
+		if r := rep.Remediation[0].Risk; r != "" {
+			body += " (risk: " + r + ")"
+		}
+	}
+
+	title := "[" + string(priority) + "] " + subject
+	if !rep.Agrees {
+		title += " — the first pass was wrong"
+	}
+
+	if err := rules.Send(ctx, cfg.Notify, rules.Message{
+		Title:    title,
+		Body:     body,
+		Priority: priority,
+		Link:     runLink(w.PublicURL, run.ID),
+	}, nil); err != nil {
+		log.Warn("could not notify", "channel", cfg.Notify.Channel, "err", err)
+	}
+}
+
+// runLink points at the run, when the deployment knows its own address.
+func runLink(base, id string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		return ""
+	}
+	return base + "/runs/" + id
 }

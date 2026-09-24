@@ -89,6 +89,31 @@ type Config struct {
 	// scored because "why is this P1" has to be answerable by pointing at one
 	// line.
 	Priority []Rule `json:"priority"`
+
+	// Notify is where this cluster's findings go.
+	Notify Notify `json:"notify"`
+}
+
+// Normalise replaces nil slices with empty ones.
+//
+// A nil slice marshals to `null`, and a browser doing `rules.length` on null
+// throws — which is exactly what happened: a cluster with no saved rules
+// crashed the whole page with "Cannot read properties of null". Fixed here
+// rather than only in the client, because every consumer would otherwise have
+// to know.
+func (c Config) Normalise() Config {
+	c.Show = orEmpty(c.Show)
+	c.Mute = orEmpty(c.Mute)
+	c.Auto = orEmpty(c.Auto)
+	c.Priority = orEmpty(c.Priority)
+	return c
+}
+
+func orEmpty(r []Rule) []Rule {
+	if r == nil {
+		return []Rule{}
+	}
+	return r
 }
 
 // Matches reports whether the alert satisfies every clause present.

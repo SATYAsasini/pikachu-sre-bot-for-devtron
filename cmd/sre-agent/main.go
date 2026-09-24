@@ -147,6 +147,7 @@ func run() error {
 		Pipeline:            pipeline,
 		Redact:              redact.Default().Func(),
 		Log:                 logger,
+		PublicURL:           cfg.HTTP.PublicURL,
 		Concurrency:         cfg.Run.Concurrency,
 		IntelligenceTimeout: time.Duration(cfg.Run.IntelligenceTimeoutSeconds) * time.Second,
 		RunTimeout:          time.Duration(cfg.Run.TimeoutSeconds) * time.Second,

@@ -17,20 +17,23 @@ func (s *Store) LoadRules(ctx context.Context, clusterID int) (rules.Config, err
 	cfg := rules.Config{ClusterID: clusterID}
 	var show, mute, auto, prio []byte
 
+	var notify []byte
 	err := s.pool.QueryRow(ctx, `
-		select show, mute, auto, auto_enabled, priority
+		select show, mute, auto, auto_enabled, priority, notify
 		from cluster_rules where cluster_id = $1`, clusterID).
-		Scan(&show, &mute, &auto, &cfg.AutoEnabled, &prio)
+		Scan(&show, &mute, &auto, &cfg.AutoEnabled, &prio, &notify)
 	if err != nil {
-		// No row: the zero config is the correct answer.
-		return cfg, nil
+		// No row: the zero config is the correct answer. Normalised so the
+		// slices go out as [] rather than null.
+		return cfg.Normalise(), nil
 	}
 
 	_ = json.Unmarshal(show, &cfg.Show)
 	_ = json.Unmarshal(mute, &cfg.Mute)
 	_ = json.Unmarshal(auto, &cfg.Auto)
 	_ = json.Unmarshal(prio, &cfg.Priority)
-	return cfg, nil
+	_ = json.Unmarshal(notify, &cfg.Notify)
+	return cfg.Normalise(), nil
 }
 
 // SaveRules replaces a cluster's rules wholesale.
@@ -39,11 +42,12 @@ func (s *Store) SaveRules(ctx context.Context, cfg rules.Config, clusterName, by
 	mute, _ := json.Marshal(orEmptyRules(cfg.Mute))
 	auto, _ := json.Marshal(orEmptyRules(cfg.Auto))
 	prio, _ := json.Marshal(orEmptyRules(cfg.Priority))
+	notify, _ := json.Marshal(cfg.Notify)
 
 	_, err := s.pool.Exec(ctx, `
 		insert into cluster_rules
-			(cluster_id, cluster_name, show, mute, auto, auto_enabled, priority, updated_at, updated_by)
-		values ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+			(cluster_id, cluster_name, show, mute, auto, auto_enabled, priority, notify, updated_at, updated_by)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9)
 		on conflict (cluster_id) do update set
 			cluster_name = excluded.cluster_name,
 			show         = excluded.show,
@@ -51,9 +55,10 @@ func (s *Store) SaveRules(ctx context.Context, cfg rules.Config, clusterName, by
 			auto         = excluded.auto,
 			auto_enabled = excluded.auto_enabled,
 			priority     = excluded.priority,
+			notify       = excluded.notify,
 			updated_at   = now(),
 			updated_by   = excluded.updated_by`,
-		cfg.ClusterID, clusterName, show, mute, auto, cfg.AutoEnabled, prio, by)
+		cfg.ClusterID, clusterName, show, mute, auto, cfg.AutoEnabled, prio, notify, by)
 	return err
 }
 

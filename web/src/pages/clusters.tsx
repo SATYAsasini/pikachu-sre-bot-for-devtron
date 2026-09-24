@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertTriangle, EyeOff, Save, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, EyeOff, Save, Server, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from 'cn'
 import { Button } from '@/components/ui/button'
@@ -10,9 +10,10 @@ import { Heading, Text } from '@/components/common/text'
 import { EmptyState } from '@/components/common/empty-state'
 import { RowSkeleton } from '@/components/common/skeletons'
 import { RuleList } from '@/components/rules/rule-editor'
+import { NotifyPanel } from '@/components/rules/notify-panel'
 import { api, errorMessage } from '@/lib/api'
-import { qk } from '@/lib/queries'
-import { hasCluster, useScope } from '@/lib/scope'
+import { qk, useClusters } from '@/lib/queries'
+import { useScope } from '@/lib/scope'
 import { alertMeta } from '@/lib/alert-meta'
 import type { Priority, RulesConfig } from '@/lib/types'
 
@@ -25,7 +26,31 @@ const EMPTY = (clusterId: number): RulesConfig => ({
   auto: [],
   autoEnabled: false,
   priority: [],
+  notify: { enabled: false, channel: 'slack' },
 })
+
+/**
+ * Nothing saved is not an error, and it is not an empty product.
+ *
+ * The server used to marshal nil slices as `null`, and this page did
+ * `.length` on them — so the very first visit to a cluster with no rules
+ * crashed with "Cannot read properties of null". Fixed on the server too, but
+ * coalesced here as well: a page that falls over because a feature has never
+ * been configured is the worst possible first impression of it.
+ */
+function safe(cfg: RulesConfig | undefined, clusterId: number): RulesConfig {
+  const e = EMPTY(clusterId)
+  if (!cfg) return e
+  return {
+    ...e,
+    ...cfg,
+    show: cfg.show ?? [],
+    mute: cfg.mute ?? [],
+    auto: cfg.auto ?? [],
+    priority: cfg.priority ?? [],
+    notify: cfg.notify ?? e.notify,
+  }
+}
 
 /**
  * Per-cluster alert rules, with the consequences on screen.
@@ -40,15 +65,158 @@ const EMPTY = (clusterId: number): RulesConfig => ({
  * The preview updates as you type, before anything is saved. Saving is a
  * separate, deliberate act.
  */
-export function RulesPage() {
-  const { scope } = useScope()
-  const ready = hasCluster(scope)
-  const clusterId = scope.clusterId ?? 0
+type Tab = 'rules' | 'notifications'
+
+/**
+ * Per-cluster configuration, one cluster at a time.
+ *
+ * This was a bare /rules page bound to whatever the top bar happened to be
+ * scoped to, which made "where do I set this up for my other cluster?" an
+ * unanswerable question. Clusters are the unit of configuration here — what
+ * counts as P0 in production is rarely what counts as P0 in a sandbox, and
+ * each one has its own channel — so the cluster is picked on the page rather
+ * than inherited from elsewhere.
+ */
+export function ClustersPage() {
+  const { scope, setScope } = useScope()
+  const clusters = useClusters()
+  const [tab, setTab] = useState<Tab>('rules')
+
+  // Default to whatever the top bar is scoped to, then the first usable one.
+  const list = clusters.data ?? []
+  const selected = list.find((c) => c.id === scope.clusterId) ?? list[0]
+  const clusterId = selected?.id ?? 0
+  const clusterName = selected?.clusterName
+  const ready = clusterId !== 0
+
+  if (clusters.isPending) {
+    return (
+      <Panel>
+        <PanelBody>
+          <RowSkeleton rows={4} />
+        </PanelBody>
+      </Panel>
+    )
+  }
+  if (list.length === 0) {
+    return (
+      <Panel>
+        <PanelBody>
+          <EmptyState
+            icon={SlidersHorizontal}
+            title="No readable clusters"
+            line="Rules and notifications are per cluster, and none can be read right now. Settings shows what each one answered."
+          />
+        </PanelBody>
+      </Panel>
+    )
+  }
+
+  return (
+    <div className="w-full space-y-4">
+      <header className="border-b border-border pb-3">
+        <Heading level={1} className="text-lg">
+          Clusters
+        </Heading>
+        <Text tone="muted" className="mt-1">
+          What each cluster shows, how urgent its alerts are, and where its findings go.
+        </Text>
+      </header>
+
+      {/* One card per cluster. Selecting also moves the global scope, so the
+          alert list you go back to is the one you just configured. */}
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {list.map((c) => {
+          const on = c.id === clusterId
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setScope({ clusterId: c.id, clusterName: c.clusterName })}
+              aria-current={on ? 'true' : undefined}
+              className={cn(
+                'rounded-xl border-2 bg-card px-3 py-2.5 text-left shadow-card transition-all',
+                'hover:-translate-y-px hover:shadow-raised',
+                'focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none',
+                on ? 'border-accent-strong' : 'border-border hover:border-accent-strong/40',
+              )}
+            >
+              <span className="flex items-center gap-1.5">
+                <Server aria-hidden className={cn('size-3.5 shrink-0', on ? 'text-accent-strong' : 'text-muted-foreground')} />
+                <span className="truncate font-mono text-xs font-semibold">{c.clusterName}</span>
+                {on ? <Chip tone="accent" className="ml-auto shrink-0">editing</Chip> : null}
+              </span>
+              <ClusterSummary clusterId={c.id} />
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border pb-2">
+        {(
+          [
+            ['rules', 'Alert rules'],
+            ['notifications', 'Notifications'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            aria-current={tab === key ? 'page' : undefined}
+            className={cn(
+              'rounded-lg border px-3 py-1.5 text-xs transition-all',
+              'focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none',
+              tab === key
+                ? 'border-accent-strong/45 bg-accent-strong/12 font-semibold text-foreground shadow-card'
+                : 'border-border bg-card font-medium text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {ready ? <ClusterConfig key={clusterId} clusterId={clusterId} clusterName={clusterName} tab={tab} /> : null}
+    </div>
+  )
+}
+
+/** A one-line "is anything configured here" for the cluster cards. */
+function ClusterSummary({ clusterId }: { clusterId: number }) {
+  const q = useQuery({ queryKey: qk.rules(clusterId), queryFn: () => api.rules(clusterId), staleTime: 60_000 })
+  const cfg = q.data
+  if (!cfg) return <span className="mt-1 block text-[0.625rem] text-muted-foreground">…</span>
+
+  const ruleCount = (cfg.priority?.length ?? 0) + (cfg.mute?.length ?? 0) + (cfg.show?.length ?? 0)
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1">
+      <span className="text-[0.625rem] text-muted-foreground">
+        {ruleCount === 0 ? 'no rules yet' : `${ruleCount} rule${ruleCount === 1 ? '' : 's'}`}
+      </span>
+      {cfg.notify?.enabled ? (
+        <Chip tone="ok">notifying</Chip>
+      ) : (
+        <span className="text-[0.625rem] text-muted-foreground/70">· no channel</span>
+      )}
+      {cfg.autoEnabled ? <Chip tone="warn">auto</Chip> : null}
+    </span>
+  )
+}
+
+function ClusterConfig({
+  clusterId,
+  clusterName,
+  tab,
+}: {
+  clusterId: number
+  clusterName?: string
+  tab: Tab
+}) {
 
   const saved = useQuery({
     queryKey: qk.rules(clusterId),
     queryFn: () => api.rules(clusterId),
-    enabled: ready,
     staleTime: 30_000,
   })
 
@@ -57,7 +225,7 @@ export function RulesPage() {
   // discarded during render rather than corrected in an effect — an effect
   // would paint one frame of the previous cluster's rules first, which on this
   // page means briefly showing somebody the wrong mute list.
-  const seed = saved.data ?? (ready ? EMPTY(clusterId) : null)
+  const seed = saved.data ? safe(saved.data, clusterId) : EMPTY(clusterId)
   const seedKey = useMemo(() => JSON.stringify(seed), [seed])
   const [draft, setDraft] = useState<{ key: string; cfg: RulesConfig } | null>(null)
   const cfg = draft?.key === seedKey ? draft.cfg : (seed ?? EMPTY(clusterId))
@@ -76,14 +244,13 @@ export function RulesPage() {
 
   const preview = useQuery({
     queryKey: [...qk.rules(clusterId), 'preview', JSON.stringify(debounced)] as const,
-    queryFn: () => api.previewRules({ ...debounced, clusterName: scope.clusterName }),
-    enabled: ready,
+    queryFn: () => api.previewRules({ ...debounced, clusterName }),
     staleTime: 15_000,
     retry: false,
   })
 
   const save = useMutation({
-    mutationFn: () => api.saveRules({ ...cfg, clusterName: scope.clusterName }),
+    mutationFn: () => api.saveRules({ ...cfg, clusterName }),
     onSuccess: () => {
       toast.success('Rules saved', { description: 'They apply to every alert list from now on.' })
       void saved.refetch()
@@ -91,37 +258,25 @@ export function RulesPage() {
     onError: (e) => toast.error('Could not save', { description: errorMessage(e) }),
   })
 
-  if (!ready) {
+  if (tab === 'notifications') {
     return (
-      <Panel>
-        <PanelBody>
-          <EmptyState
-            icon={SlidersHorizontal}
-            title="Pick a cluster first"
-            line="Rules are per cluster — what counts as P0 in production is rarely what counts as P0 in a sandbox."
+      <div className="space-y-3">
+        <SaveBar dirty={dirty} pending={save.isPending} onSave={() => save.mutate()} />
+        <div className="max-w-2xl">
+          <NotifyPanel
+            clusterId={clusterId}
+            clusterName={clusterName}
+            notify={cfg.notify}
+            onChange={(notify) => setCfg({ ...cfg, notify })}
           />
-        </PanelBody>
-      </Panel>
+        </div>
+      </div>
     )
   }
 
   return (
-    <div className="w-full space-y-4">
-      <header className="flex flex-wrap items-end gap-3 border-b border-border pb-3">
-        <div className="min-w-0 flex-1">
-          <Heading level={1} className="text-lg">
-            Alert rules
-          </Heading>
-          <Text tone="muted" className="mt-1">
-            For <span className="font-mono">{scope.clusterName}</span>. Decide what is worth showing, what is
-            noise, how urgent each alert is, and which ones are worth investigating without being asked.
-          </Text>
-        </div>
-        <Button size="sm" onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
-          <Save aria-hidden className="size-3.5" />
-          {save.isPending ? 'Saving…' : dirty ? 'Save rules' : 'Saved'}
-        </Button>
-      </header>
+    <div className="space-y-3">
+      <SaveBar dirty={dirty} pending={save.isPending} onSave={() => save.mutate()} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
         <div className="min-w-0 space-y-3">
@@ -221,6 +376,21 @@ export function RulesPage() {
           </Panel>
         </aside>
       </div>
+    </div>
+  )
+}
+
+/** Unsaved work needs somewhere obvious to go, on both tabs. */
+function SaveBar({ dirty, pending, onSave }: { dirty: boolean; pending: boolean; onSave: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Text tone="fine" as="span">
+        {dirty ? 'Unsaved changes — nothing applies until you save.' : 'Everything here is saved.'}
+      </Text>
+      <Button size="sm" onClick={onSave} disabled={!dirty || pending} className="ml-auto">
+        <Save aria-hidden className="size-3.5" />
+        {pending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+      </Button>
     </div>
   )
 }

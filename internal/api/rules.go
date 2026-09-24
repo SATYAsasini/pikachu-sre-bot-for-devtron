@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/devtron-labs/devtron-sre-agent/internal/monitoring"
 	"github.com/devtron-labs/devtron-sre-agent/internal/rules"
@@ -20,6 +21,9 @@ func (s *Server) getRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "load_failed", err.Error())
 		return
 	}
+	// The webhook URL is a credential: anyone holding it can post into the
+	// channel. It goes out as "set, ending …a1b2", never as the value.
+	cfg.Notify = cfg.Notify.Redacted()
 	writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -37,11 +41,24 @@ func (s *Server) putRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_cluster_id", "clusterId is required")
 		return
 	}
+
+	// The UI never receives the URL, so it cannot send it back. An empty URL
+	// on save means "unchanged", not "cleared" — otherwise editing a priority
+	// rule would silently disconnect the channel. Clearing is explicit.
+	if strings.TrimSpace(body.Notify.URL) == "" && !body.Notify.ClearURL {
+		if prev, err := s.Runs.Store.LoadRules(r.Context(), body.ClusterID); err == nil {
+			body.Notify.URL = prev.Notify.URL
+		}
+	}
+	body.Notify.URLSet, body.Notify.URLHint, body.Notify.ClearURL = false, "", false
+
 	if err := s.Runs.Store.SaveRules(r.Context(), body.Config, body.ClusterName, "ui"); err != nil {
 		writeError(w, http.StatusInternalServerError, "save_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, body.Config)
+	out := body.Config
+	out.Notify = out.Notify.Redacted()
+	writeJSON(w, http.StatusOK, out)
 }
 
 // previewRules runs a proposed rule set against the alerts firing right now.
@@ -113,4 +130,52 @@ func (s *Server) previewRules(w http.ResponseWriter, r *http.Request) {
 			string(rules.P2): counts[rules.P2],
 		},
 	})
+}
+
+// testNotify sends one message to the configured channel.
+//
+// A webhook URL is pasted from somewhere else and is wrong surprisingly
+// often — a trailing space, the wrong workspace, a revoked token. Finding
+// that out during an incident, when the message that matters does not
+// arrive, is the worst possible time.
+func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ClusterID   int          `json:"clusterId"`
+		ClusterName string       `json:"clusterName"`
+		Notify      rules.Notify `json:"notify"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_body", err.Error())
+		return
+	}
+
+	// The UI never holds the URL, so a test of the saved channel sends no URL
+	// at all. Fall back to what is stored.
+	n := body.Notify
+	if strings.TrimSpace(n.URL) == "" && body.ClusterID != 0 {
+		if prev, err := s.Runs.Store.LoadRules(r.Context(), body.ClusterID); err == nil {
+			n.URL = prev.Notify.URL
+			if n.Channel == "" {
+				n.Channel = prev.Notify.Channel
+			}
+		}
+	}
+	// Enabled is irrelevant to a test: someone verifying a URL before
+	// switching the channel on is exactly the case this exists for.
+	n.Enabled = true
+
+	name := body.ClusterName
+	if name == "" {
+		name = "this cluster"
+	}
+	err := rules.Send(r.Context(), n, rules.Message{
+		Title:    "Pikachu SRE is connected",
+		Body:     "This is a test from " + name + ". Findings for this cluster will arrive here.",
+		Priority: rules.P2,
+	}, nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

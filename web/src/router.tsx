@@ -3,7 +3,7 @@ import { AppShell } from '@/components/layout/app-shell'
 import { NewRunPage } from '@/pages/new-run'
 import { RunDetailPage } from '@/pages/run-detail'
 import { RunHistoryPage, type RunsSearch } from '@/pages/runs'
-import { RulesPage } from '@/pages/rules'
+import { ClustersPage } from '@/pages/clusters'
 import { SettingsPage } from '@/pages/settings'
 import { SETTINGS_SECTIONS, type SettingsSearch, type SettingsSection } from '@/lib/settings-sections'
 import { NotFoundPage } from '@/pages/not-found'
@@ -45,10 +45,10 @@ const settingsRoute = createRoute({
   }),
 })
 
-const rulesRoute = createRoute({
+const clustersRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/rules',
-  component: RulesPage,
+  path: '/clusters',
+  component: ClustersPage,
 })
 
 const runsRoute = createRoute({
@@ -67,7 +67,7 @@ const runDetailRoute = createRoute({
   component: RunDetailPage,
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, rulesRoute, runsRoute, runDetailRoute, settingsRoute])
+const routeTree = rootRoute.addChildren([indexRoute, clustersRoute, runsRoute, runDetailRoute, settingsRoute])
 
 export const router = createRouter({
   routeTree,

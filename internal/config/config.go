@@ -20,6 +20,10 @@ import (
 type Config struct {
 	HTTP struct {
 		Addr string `yaml:"addr"`
+		// PublicURL is where this deployment is reachable from a browser. Used
+		// only to put a link in a notification; empty omits the link rather
+		// than guessing, because a wrong link is worse than none.
+		PublicURL string `yaml:"publicUrl"`
 	} `yaml:"http"`
 
 	Database struct {
@@ -140,6 +144,7 @@ func defaults() *Config {
 
 func applyEnv(c *Config) {
 	set(&c.HTTP.Addr, "SRE_HTTP_ADDR")
+	set(&c.HTTP.PublicURL, "SRE_PUBLIC_URL")
 	set(&c.Database.URL, "SRE_DATABASE_URL")
 	setBool(&c.Database.MigrateOnStart, "SRE_DATABASE_MIGRATE")
 	set(&c.Log.Level, "SRE_LOG_LEVEL")

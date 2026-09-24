@@ -599,6 +599,31 @@ export interface Rule {
   enabled: boolean
 }
 
+export const CHANNELS = ['slack', 'discord', 'webhook'] as const
+export type Channel = (typeof CHANNELS)[number]
+
+/**
+ * Where a cluster's findings go.
+ *
+ * One event only — a finished investigation. Every monitoring tool can
+ * already say something broke; what none of them say is what it was and what
+ * to do, which is why that is the only thing worth a notification.
+ */
+export interface NotifyConfig {
+  enabled: boolean
+  channel: Channel
+  /** Only ever sent *to* the server. The server never sends it back. */
+  url?: string
+  /** True when a webhook is configured. */
+  urlSet?: boolean
+  /** The last few characters, to recognise which one it is. */
+  urlHint?: string
+  /** Explicit, because an empty url on save means "unchanged". */
+  clearUrl?: boolean
+  /** Suppress anything less urgent. Empty means everything. */
+  minPriority?: Priority | ''
+}
+
 export interface RulesConfig {
   clusterId: number
   show: Rule[]
@@ -606,6 +631,7 @@ export interface RulesConfig {
   auto: Rule[]
   autoEnabled: boolean
   priority: Rule[]
+  notify: NotifyConfig
 }
 
 export interface RuleDecision {

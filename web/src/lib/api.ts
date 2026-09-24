@@ -8,6 +8,7 @@ import type {
   Health,
   HelmApp,
   Harness,
+  NotifyConfig,
   RulePreview,
   RulesConfig,
   KnowledgeComponent,
@@ -186,6 +187,10 @@ export const api = {
   /** Runs a proposed rule set against what is firing right now. */
   previewRules: (body: RulesConfig & { clusterName?: string }): Promise<RulePreview> =>
     request<RulePreview>('/rules/preview', { method: 'POST', json: body }),
+
+  /** Posts one message, so a pasted webhook is verified before an incident. */
+  testNotify: (body: { clusterId: number; clusterName?: string; notify: NotifyConfig }): Promise<{ ok: boolean; error?: string }> =>
+    request<{ ok: boolean; error?: string }>('/rules/notify/test', { method: 'POST', json: body }),
 
   /** Re-measures every cluster and returns the same rows as `clusters`. */
   refreshClusters: async (): Promise<Cluster[]> =>

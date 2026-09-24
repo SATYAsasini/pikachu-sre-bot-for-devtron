@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/rules", s.getRules)
 		r.Put("/rules", s.putRules)
 		r.Post("/rules/preview", s.previewRules)
+		r.Post("/rules/notify/test", s.testNotify)
 
 		r.Post("/runs", s.createRun)
 		r.Get("/runs", s.listRuns)

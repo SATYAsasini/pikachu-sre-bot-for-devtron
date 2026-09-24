@@ -47,7 +47,7 @@ func (f *ModelFactory) Get(ctx context.Context, alias string) (model.LLM, error)
 		m, err = newGemini(ctx, id)
 	case "anthropic", "claude":
 		// The strong alias does the analysis and the critique, which is where
-		// adaptive thinking earns its cost; the fast alias classifies.
+		// reasoning earns its cost; the fast alias classifies.
 		m, err = NewAnthropic(AnthropicOptions{
 			ModelID:  id,
 			Thinking: alias != "fast",
@@ -84,10 +84,7 @@ func (f *ModelFactory) modelID(alias string) string {
 func defaultModel(provider, alias string) string {
 	switch provider {
 	case "anthropic", "claude":
-		if alias == "fast" {
-			return "claude-sonnet-5"
-		}
-		return "claude-opus-5"
+		return defaultAnthropicModel
 	}
 	if alias == "fast" {
 		return "gemini-2.5-flash"

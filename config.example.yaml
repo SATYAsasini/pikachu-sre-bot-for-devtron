@@ -32,8 +32,9 @@ models:
   # GEMINI_API_KEY / GOOGLE_API_KEY.
   provider: ""         # anthropic | gemini | "" to auto-detect
   # Either may be any model id the provider accepts. Empty picks that
-  # provider's default: claude-sonnet-5 / claude-opus-5, or
-  # gemini-2.5-flash / gemini-2.5-pro.
+  # provider's default: claude-haiku-4-5 for both, or gemini-2.5-flash /
+  # gemini-2.5-pro. Point strong at claude-opus-5 for deeper investigations
+  # at roughly five times the token price.
   fast: ""             # the judge agent
   strong: ""           # the sre agent
   effort: ""           # anthropic thinking effort: low|medium|high|xhigh|max

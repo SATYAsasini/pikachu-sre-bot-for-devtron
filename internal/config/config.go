@@ -212,13 +212,13 @@ func (c *Config) resolveModelDefaults() {
 	if c.Models.Fast == "" {
 		c.Models.Fast = "gemini-2.5-flash"
 		if anthropic {
-			c.Models.Fast = "claude-sonnet-5"
+			c.Models.Fast = "claude-haiku-4-5"
 		}
 	}
 	if c.Models.Strong == "" {
 		c.Models.Strong = "gemini-2.5-pro"
 		if anthropic {
-			c.Models.Strong = "claude-opus-5"
+			c.Models.Strong = "claude-haiku-4-5"
 		}
 	}
 }

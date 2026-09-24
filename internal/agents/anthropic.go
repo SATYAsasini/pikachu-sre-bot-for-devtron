@@ -29,9 +29,9 @@ type AnthropicLLM struct {
 	client    anthropic.Client
 	modelID   string
 	maxTokens int64
-	// Thinking turns on adaptive thinking, which Claude 4.6 and later use to
-	// decide how much to reason per request. Worth it for the analyst and
-	// critic; wasteful for a one-line triage classification.
+	// Thinking asks the model to reason before answering. How that is
+	// expressed depends on the model — see thinkingFor. Worth it for the
+	// analyst and critic; wasteful for a one-line triage classification.
 	Thinking bool
 	// Effort is low, medium, high, xhigh or max. Empty leaves the default.
 	Effort string
@@ -61,7 +61,7 @@ func NewAnthropic(o AnthropicOptions) (*AnthropicLLM, error) {
 		return nil, fmt.Errorf("no Anthropic credentials: set SRE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY")
 	}
 	if o.ModelID == "" {
-		o.ModelID = "claude-opus-5"
+		o.ModelID = defaultAnthropicModel
 	}
 	if o.MaxTokens <= 0 {
 		o.MaxTokens = 16000
@@ -106,11 +106,6 @@ func (a *AnthropicLLM) buildParams(req *model.LLMRequest) (*anthropic.MessageNew
 	}
 	params := anthropic.MessageNewParams{Model: anthropic.Model(id), MaxTokens: a.maxTokens}
 
-	if a.Thinking {
-		adaptive := anthropic.ThinkingConfigAdaptiveParam{}
-		params.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
-	}
-
 	if cfg := req.Config; cfg != nil {
 		if cfg.SystemInstruction != nil {
 			var sys []anthropic.TextBlockParam
@@ -142,7 +137,72 @@ func (a *AnthropicLLM) buildParams(req *model.LLMRequest) (*anthropic.MessageNew
 		return nil, fmt.Errorf("anthropic: request has no messages")
 	}
 	params.Messages = msgs
+
+	// Last, because a token budget has to fit under the final max_tokens and
+	// the config block above may have raised or lowered it.
+	if a.Thinking {
+		params.Thinking = thinkingFor(id, params.MaxTokens)
+	}
 	return &params, nil
+}
+
+// defaultAnthropicModel is used when nothing names a model. Kept here rather
+// than inline so the three places that answer "which Claude is this" cannot
+// drift apart.
+const defaultAnthropicModel = "claude-haiku-4-5"
+
+// minThinkingBudget is the API's floor for budget_tokens.
+const minThinkingBudget = 1024
+
+// thinkingFor returns the thinking configuration this particular model
+// accepts.
+//
+// Claude 4.6 and later take adaptive thinking and decide the depth
+// themselves. Haiku 4.5 and everything before it do not — they want an
+// explicit budget_tokens, and adaptive is a 400 from them. This is worth a
+// function because the model id is configuration and the request shape is
+// code: point SRE_MODELS_STRONG at an older model and the mismatch does not
+// surface until the first investigation fails.
+func thinkingFor(modelID string, maxTokens int64) anthropic.ThinkingConfigParamUnion {
+	if adaptiveThinking(modelID) {
+		return anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
+	}
+	// Half the output budget, which leaves the same again for the answer.
+	// It must land under max_tokens and at or above the API's floor.
+	budget := maxTokens / 2
+	if budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+	if budget < minThinkingBudget {
+		if maxTokens <= minThinkingBudget {
+			// No room to think and still answer. Ask for no thinking rather
+			// than for an illegal budget, which would fail the whole call.
+			return anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+		}
+		budget = minThinkingBudget
+	}
+	return anthropic.ThinkingConfigParamOfEnabled(budget)
+}
+
+// preAdaptiveFamilies are the model families that predate adaptive thinking.
+// Matched as substrings so a dated snapshot id is recognised too.
+//
+// The list is of the old ones rather than the new ones on purpose: every
+// current model takes adaptive thinking, so an id nobody here has heard of is
+// far more likely to be newer than older.
+var preAdaptiveFamilies = []string{
+	"haiku-4-5", "sonnet-4-5", "opus-4-5",
+	"claude-3", "claude-2", "instant",
+}
+
+func adaptiveThinking(modelID string) bool {
+	id := strings.ToLower(modelID)
+	for _, f := range preAdaptiveFamilies {
+		if strings.Contains(id, f) {
+			return false
+		}
+	}
+	return true
 }
 
 // anthropicMessages converts genai contents, merging consecutive turns of the

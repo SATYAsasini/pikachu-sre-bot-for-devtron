@@ -631,7 +631,7 @@ export function openFixtureStream(id: string, after: number, handlers: FixtureSt
 
 export const fixtures = {
   health: () => slow<Health>({ status: 'ok' }, 120),
-  config: () => slow<AppConfig>({ devtronUrl: 'https://devtron.example.com', models: { provider: 'anthropic', fast: 'claude-sonnet-5', strong: 'claude-opus-5' }, features: { fixtures: true } }, 120),
+  config: () => slow<AppConfig>({ devtronUrl: 'https://devtron.example.com', models: { provider: 'anthropic', fast: 'claude-haiku-4-5', strong: 'claude-haiku-4-5' }, features: { fixtures: true } }, 120),
   clusters: (all = false) => slow(all ? CLUSTERS : CLUSTERS.filter((c) => c.investigable)),
   environments: (clusterId?: number) => slow(clusterId === undefined ? ENVIRONMENTS : ENVIRONMENTS.filter((e) => e.clusterId === clusterId)),
   monitoring: (clusterId: number) => slow(MONITORING[clusterId] ?? { clusterId, clusterName: '', metrics: null, alerts: null, discoveredAt: new Date().toISOString(), notes: ['no monitoring discovered for this cluster'] }),

@@ -15,10 +15,18 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
 )
+
+// SweepBudget bounds one capability sweep, however many clusters there are.
+// A sweep of 23 clusters against a struggling orchestrator measured ~25s;
+// three minutes is generous without being unbounded.
+const SweepBudget = 3 * time.Minute
 
 // Store persists probe results across restarts.
 type Store interface {
@@ -38,9 +46,13 @@ type Service struct {
 	mu   sync.RWMutex
 	byID map[int]devtron.Capability
 
-	// sweeping serialises refreshes: a sweep is expensive and several
-	// concurrent ones against an already-struggling orchestrator help nobody.
-	sweeping sync.Mutex
+	// flight collapses concurrent sweeps into one. This used to be a plain
+	// mutex, which serialised them instead of deduplicating them — every
+	// caller still got its own full sweep, just later. See Refresh.
+	flight singleflight.Group
+	// inflight lets callers see that a sweep is already on its way without
+	// blocking on it.
+	inflight atomic.Bool
 }
 
 // New builds a service.
@@ -96,7 +108,16 @@ func (s *Service) All() []devtron.Capability {
 }
 
 // Stale reports whether a sweep is due.
+//
+// A sweep already running means one is not due, whatever the timestamps say.
+// Without that, every poll of the cluster list during the ~25s a sweep takes
+// saw stale timestamps — the results are only stored at the end — and asked
+// for another one. The dashboard polls, so the queue never drained and the
+// orchestrator was swept continuously.
 func (s *Service) Stale() bool {
+	if s.inflight.Load() {
+		return false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.byID) == 0 {
@@ -138,17 +159,43 @@ func (s *Service) Clusters(ctx context.Context, usableOnly bool) ([]devtron.Clus
 }
 
 // Refresh sweeps every cluster and persists the result.
+//
+// Callers that arrive while a sweep is running join that one and get its
+// result. They used to queue behind it and then run another: clicking
+// "re-measure" while the dashboard had a background sweep going cost the
+// operator two full sweeps back to back, which reads as a hung button.
+//
+// The sweep itself is detached from the caller, so whoever started it giving
+// up does not abandon everyone who joined.
 func (s *Service) Refresh(ctx context.Context) ([]devtron.Capability, error) {
-	s.sweeping.Lock()
-	defer s.sweeping.Unlock()
+	ch := s.flight.DoChan("sweep", func() (any, error) {
+		s.inflight.Store(true)
+		defer s.inflight.Store(false)
 
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), SweepBudget)
+		defer cancel()
+		return s.sweep(bg)
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.([]devtron.Capability), nil
+	}
+}
+
+func (s *Service) sweep(ctx context.Context) ([]devtron.Capability, error) {
 	clusters, err := s.dc.Clusters(ctx)
 	if err != nil {
 		return nil, err
 	}
 	started := time.Now()
 	caps := s.prober.ProbeAll(ctx, clusters)
-	s.put(caps)
+	s.replace(caps)
 	if err := s.store.SaveCapabilities(ctx, caps); err != nil {
 		s.log.Warn("could not persist cluster capabilities", "err", err)
 	}
@@ -164,10 +211,16 @@ func (s *Service) Refresh(ctx context.Context) ([]devtron.Capability, error) {
 	return caps, nil
 }
 
-// RefreshInBackground sweeps without blocking a request.
+// RefreshInBackground sweeps without blocking a request, and does nothing
+// when a sweep is already under way.
 func (s *Service) RefreshInBackground(ctx context.Context) {
+	if s.inflight.Load() {
+		return
+	}
 	go func() {
-		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
+		// Refresh detaches and budgets the sweep itself; this context only
+		// decides how long this particular caller waits to join one.
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), SweepBudget)
 		defer cancel()
 		if _, err := s.Refresh(bg); err != nil {
 			s.log.Warn("capability sweep failed", "err", err)
@@ -185,6 +238,30 @@ func (s *Service) Reset(ctx context.Context) {
 	}
 }
 
+// replace swaps the whole measurement set for a completed sweep's results.
+//
+// Merging was wrong, and expensively so. A cluster Devtron no longer lists
+// stayed in the map with whatever timestamp it had when it was last seen, so
+// Stale() — which is true if *any* entry has aged out — was true forever.
+// Every poll of the cluster list then started another sweep the moment the
+// previous one ended. On the installation this was found on, two clusters
+// left over from an earlier Devtron were enough to make the service sweep
+// continuously for as long as it ran.
+//
+// A sweep sees the current cluster list, so it is authoritative about which
+// clusters exist. An empty one cannot get here: Refresh fails first when the
+// list could not be read.
+func (s *Service) replace(caps []devtron.Capability) {
+	next := make(map[int]devtron.Capability, len(caps))
+	for _, c := range caps {
+		next[c.ClusterID] = c
+	}
+	s.mu.Lock()
+	s.byID = next
+	s.mu.Unlock()
+}
+
+// put merges, which is what restoring from the store wants.
 func (s *Service) put(caps []devtron.Capability) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

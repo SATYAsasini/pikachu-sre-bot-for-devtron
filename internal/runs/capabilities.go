@@ -18,6 +18,22 @@ func (s *Store) SaveCapabilities(ctx context.Context, caps []devtron.Capability)
 		return err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // no-op after commit
+
+	// Forget clusters this sweep did not see. Without this the table only
+	// ever grew: a cluster removed from Devtron kept its row and its old
+	// probed_at, the service restored it at boot, and it was permanently
+	// overdue for a re-measurement that would never cover it. The empty-sweep
+	// guard above is what stops this from wiping the table when a sweep
+	// returned nothing.
+	ids := make([]int, 0, len(caps))
+	for _, c := range caps {
+		ids = append(ids, c.ClusterID)
+	}
+	if _, err := tx.Exec(ctx,
+		`delete from cluster_capabilities where cluster_id <> all($1)`, ids); err != nil {
+		return err
+	}
+
 	for _, c := range caps {
 		kinds, _ := json.Marshal(c.Kinds)
 		if _, err := tx.Exec(ctx, `

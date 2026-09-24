@@ -132,12 +132,18 @@ type Prober struct {
 	Timeout time.Duration
 	// Concurrency bounds simultaneous probes so a sweep of 23 clusters does
 	// not become 23 simultaneous hanging requests against the orchestrator.
+	//
+	// Most of a sweep is spent waiting out Timeout on clusters that will
+	// never answer, so this is what sets its wall clock: at 6, twenty-odd
+	// unreachable clusters took four waves and about 25 seconds, which is a
+	// long time to hold a button down for. Twelve halves that and still
+	// keeps a hard ceiling on what is in flight.
 	Concurrency int
 }
 
 // NewProber builds a prober with sensible bounds.
 func NewProber(c *Client) *Prober {
-	return &Prober{c: c, Timeout: 8 * time.Second, Concurrency: 6}
+	return &Prober{c: c, Timeout: 8 * time.Second, Concurrency: 12}
 }
 
 // Probe measures one cluster: can we reach it, and which kinds answer.

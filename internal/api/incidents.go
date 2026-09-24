@@ -37,12 +37,18 @@ func (s *Server) listIncidents(w http.ResponseWriter, r *http.Request) {
 	for _, a := range list {
 		ids = append(ids, a.ID)
 	}
-	if found, err := s.Incidents.LatestFindings(r.Context(), ids); err == nil {
-		for i := range list {
-			if f, ok := found[list[i].ID]; ok {
-				f := f
-				list[i].Latest = &f
-			}
+	found, err := s.Incidents.LatestFindings(r.Context(), ids)
+	if err != nil {
+		// Not fatal — the list is still worth serving without conclusions on
+		// it. But it must be said: this failing silently is how a broken
+		// column type made every alert read "Not investigated yet" for as
+		// long as it did.
+		s.Log.Error("could not read alert findings; the dashboard will show no conclusions", "err", err)
+	}
+	for i := range list {
+		if f, ok := found[list[i].ID]; ok {
+			f := f
+			list[i].Latest = &f
 		}
 	}
 

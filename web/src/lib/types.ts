@@ -199,6 +199,7 @@ export const RUN_STATUSES = [
   'failed',
   'canceled',
   'budget_exceeded',
+  'partial',
 ] as const
 export type RunStatus = (typeof RUN_STATUSES)[number]
 
@@ -597,6 +598,15 @@ export interface Rule {
   match: RuleMatch
   priority?: Priority
   enabled: boolean
+  /**
+   * Makes a rule with no conditions match everything.
+   *
+   * An empty match used to do this implicitly, and "Add rule" creates an
+   * empty rule — so the instant anyone clicked it, every alert was claimed by
+   * a half-written rule. A catch-all is a real thing to want at the bottom of
+   * a priority list, but it has to be asked for.
+   */
+  catchAll?: boolean
 }
 
 export const CHANNELS = ['slack', 'discord', 'webhook'] as const

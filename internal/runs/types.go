@@ -20,12 +20,20 @@ const (
 	StatusFailed         = "failed"
 	StatusCanceled       = "canceled"
 	StatusBudgetExceeded = "budget_exceeded"
+	// StatusPartial: Devtron's first pass answered, our agent did not.
+	//
+	// Calling that "failed" throws away work that already happened and is
+	// useful — a completed 42-second Devtron analysis sitting under a red
+	// banner, with the page insisting nothing was learned. It is also not
+	// "succeeded": nobody verified that analysis, and saying so is the whole
+	// point of this product.
+	StatusPartial = "partial"
 )
 
 // Terminal reports that no further work will happen on this run.
 func Terminal(status string) bool {
 	switch status {
-	case StatusSucceeded, StatusFailed, StatusCanceled, StatusBudgetExceeded:
+	case StatusSucceeded, StatusFailed, StatusCanceled, StatusBudgetExceeded, StatusPartial:
 		return true
 	}
 	return false

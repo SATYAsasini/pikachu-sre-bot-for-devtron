@@ -29,7 +29,10 @@ func TestMatch(t *testing.T) {
 		alert monitoring.Alert
 		want  bool
 	}{
-		{"empty matches anything", Match{}, fxCrash(), true},
+		// An empty match claims nothing. "Add rule" creates an empty rule, so
+		// the old behaviour meant every alert on the cluster was relabelled
+		// the instant anyone clicked it.
+		{"empty matches nothing", Match{}, fxCrash(), false},
 		{"name substring", Match{Name: "crashloop"}, fxCrash(), true},
 		{"name is case-insensitive", Match{Name: "CRASHLOOPING"}, fxCrash(), true},
 		{"name miss", Match{Name: "scheduler"}, fxCrash(), false},
@@ -107,7 +110,7 @@ func TestPriorityIsFirstMatchWins(t *testing.T) {
 	cfg := Config{Priority: []Rule{
 		{Name: "prod critical", Match: Match{Severity: []string{"critical"}, Namespace: []string{"prod"}}, Priority: P0, Enabled: true},
 		{Name: "any critical", Match: Match{Severity: []string{"critical"}}, Priority: P1, Enabled: true},
-		{Name: "catch-all", Match: Match{}, Priority: P1, Enabled: true},
+		{Name: "catch-all", Match: Match{}, CatchAll: true, Priority: P1, Enabled: true},
 	}}
 
 	d := cfg.Decide(fxCrash())
@@ -173,6 +176,34 @@ func TestApply(t *testing.T) {
 	}
 	if decisions[0].Priority != P0 {
 		t.Errorf("want P0 carried through, got %s", decisions[0].Priority)
+	}
+}
+
+// The catch-all still has to work — it is a real thing to want at the bottom
+// of a priority list. It just has to be asked for.
+func TestCatchAll(t *testing.T) {
+	t.Parallel()
+
+	blank := Config{Priority: []Rule{{Name: "blank", Match: Match{}, Priority: P0, Enabled: true}}}
+	if d := blank.Decide(fxCrash()); d.Priority != P2 || d.Why != "" {
+		t.Errorf("a blank rule must claim nothing, got %s via %q", d.Priority, d.Why)
+	}
+
+	explicit := Config{Priority: []Rule{{Name: "everything else", Match: Match{}, CatchAll: true, Priority: P1, Enabled: true}}}
+	if d := explicit.Decide(fxCrash()); d.Priority != P1 || d.Why != "everything else" {
+		t.Errorf("an explicit catch-all must claim everything, got %s via %q", d.Priority, d.Why)
+	}
+
+	// A blank show rule must not switch the list to opt-in and hide the lot.
+	blankShow := Config{Show: []Rule{{Match: Match{}, Enabled: true}}}
+	if !blankShow.Decide(fxCrash()).Show {
+		t.Error("a blank show rule must not hide every alert")
+	}
+
+	// An explicit catch-all in show is still opt-in, and still shows.
+	realShow := Config{Show: []Rule{{Match: Match{}, CatchAll: true, Enabled: true}}}
+	if !realShow.Decide(fxCrash()).Show {
+		t.Error("an explicit catch-all show rule shows everything")
 	}
 }
 

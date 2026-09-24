@@ -226,6 +226,19 @@ func (w *Worker) execute(parent context.Context, runID string) {
 	if out.Status == runs.StatusBudgetExceeded {
 		msg = "the run stopped at its budget; the report may be incomplete"
 	}
+	// Devtron answered and we did not. That is not a failed run — a complete
+	// 42-second first pass is real work, and burying it under a red banner
+	// that says nothing was learned throws it away. It is not a success
+	// either: nobody verified it.
+	if out.Status == runs.StatusFailed && out.Report == nil && intel != nil && intel.Analysis != "" {
+		out.Status = runs.StatusPartial
+		out.Report = unverifiedReport(intel.Analysis)
+		msg = "Devtron's analysis is below, unverified — our agent could not run: " + errText(err)
+		if err := w.Runs.Store.SetReport(ctx, runID, out.Report); err != nil {
+			log.Warn("could not store the unverified report", "err", err)
+		}
+		err = nil
+	}
 	if out.Status == runs.StatusFailed && out.Report == nil {
 		msg = "the agents produced no usable report"
 	}
@@ -463,4 +476,30 @@ func runLink(base, id string) string {
 		return ""
 	}
 	return base + "/runs/" + id
+}
+
+// unverifiedReport carries Devtron's analysis through when our agent could not
+// run at all.
+//
+// It is explicitly marked unverified and carries no remediation and no
+// confidence. Presenting somebody else's unchecked conclusion as our finding
+// would be exactly the failure this product was built to catch, so it says
+// what it is and stops there.
+func unverifiedReport(analysis string) json.RawMessage {
+	body, err := json.Marshal(map[string]any{
+		"agrees":             true,
+		"correctedRootCause": "",
+		"confidence":         0,
+		"evidence":           []any{},
+		"remediation":        []any{},
+		"unknowns": []string{
+			"Nothing here has been checked. Our agent did not run, so no claim in this analysis was graded against the cluster.",
+		},
+		"sreNotes":   "Devtron Intelligence answered, but our verification never ran. Treat everything below as a first pass, not a finding.\n\n" + analysis,
+		"unverified": true,
+	})
+	if err != nil {
+		return nil
+	}
+	return body
 }

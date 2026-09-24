@@ -40,6 +40,8 @@ export function agentStateOf(run: Run | undefined, events: readonly RunEvent[]):
       return { mood: 'asleep', actor: '', says: 'Stopped, as asked.' }
     case 'budget_exceeded':
       return { mood: 'concerned', actor: '', says: 'Out of budget. Report may be thin.' }
+    case 'partial':
+      return { mood: 'concerned', actor: '', says: 'Devtron answered. I could not check it.' }
     case 'queued':
       return { mood: 'looking', actor: '', says: 'Queued. Warming up.' }
   }

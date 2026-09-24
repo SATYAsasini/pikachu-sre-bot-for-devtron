@@ -126,11 +126,27 @@ export function RuleRow({
         </Clause>
       </div>
 
+      {/* A rule with no conditions does nothing until it is asked to. It used
+          to match everything implicitly, which meant clicking "Add rule"
+          relabelled every alert on the cluster before a single condition had
+          been typed. */}
       {empty ? (
-        <Text tone="fine" className="mt-1.5">
-          No conditions — this rule matches <strong>every</strong> alert. That is what you want for a catch-all
-          at the bottom of a priority list, and almost never anywhere else.
-        </Text>
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={rule.catchAll ?? false}
+              onChange={(e) => set({ catchAll: e.target.checked })}
+              className="size-3.5 accent-[var(--accent-strong)]"
+            />
+            <span className="text-[0.6875rem] font-medium">Match every alert</span>
+          </label>
+          <Text tone="fine" as="span">
+            {rule.catchAll
+              ? 'This claims every alert. Keep it last — anything above it wins.'
+              : 'No conditions yet, so this rule does nothing.'}
+          </Text>
+        </div>
       ) : null}
     </li>
   )
@@ -217,8 +233,10 @@ export function RuleList({
   onChange: (next: Rule[]) => void
   action?: React.ReactNode
 }) {
+  // Disabled on creation. An enabled blank rule is a rule that acts before
+  // anyone has said what it should act on.
   const add = () =>
-    onChange([...rules, { name: '', match: {}, enabled: true, ...(showPriority ? { priority: 'P1' as const } : {}) }])
+    onChange([...rules, { name: '', match: {}, enabled: false, ...(showPriority ? { priority: 'P1' as const } : {}) }])
 
   return (
     <section className="rounded-xl border border-border bg-card p-3 shadow-card">

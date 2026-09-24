@@ -1,4 +1,4 @@
-import { Ban, CheckCircle2, CircleDashed, Gauge, Loader2, PlugZap, XCircle } from 'lucide-react'
+import { Ban, CheckCircle2, CircleDashed, Gauge, Loader2, PlugZap, ShieldAlert, XCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Chip, type Tone } from '@/components/common/status'
 import { isInterrupted, type Run, type RunStatus } from '@/lib/types'
@@ -17,6 +17,9 @@ const LOOKS: Record<RunStatus, StatusLook> = {
   failed: { tone: 'bad', label: 'failed', icon: XCircle },
   canceled: { tone: 'unknown', label: 'canceled', icon: Ban },
   budget_exceeded: { tone: 'warn', label: 'budget spent', icon: Gauge },
+  // Devtron answered and we did not. Amber, not red: a complete first pass is
+  // real work, and "failed" throws it away.
+  partial: { tone: 'warn', label: 'unverified', icon: ShieldAlert },
 }
 
 /**

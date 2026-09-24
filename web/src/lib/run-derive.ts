@@ -243,6 +243,11 @@ export function statusExplanation(run: Pick<Run, 'status' | 'error'>): string {
         run.error ||
         'The run hit its tool or token ceiling and stopped rather than overspend. Whatever it had reached by then is below, and it is incomplete.'
       )
+    case 'partial':
+      return (
+        run.error ||
+        'Devtron\u2019s first pass finished, but our agent never ran \u2014 so nothing below has been checked. It is a first pass, not a finding.'
+      )
     case 'canceled':
       return 'Canceled. Whatever is below is exactly as far as it got.'
     default:

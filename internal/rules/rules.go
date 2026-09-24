@@ -33,8 +33,7 @@ const DefaultPriority = P2
 // Match is one condition against an alert payload.
 //
 // Every field is optional and they are ANDed. An empty Match matches
-// everything, which is what makes a bare `{}` a usable catch-all at the end of
-// a priority list.
+// **nothing** — see IsEmpty. A deliberate catch-all is Rule.CatchAll.
 type Match struct {
 	// Name matches the alert name. Substring, case-insensitive.
 	Name string `json:"name,omitempty"`
@@ -54,6 +53,15 @@ type Match struct {
 
 // Rule is a match plus what to do about it.
 type Rule struct {
+	// CatchAll makes a rule with no conditions match every alert.
+	//
+	// It exists because an empty match used to do that implicitly, and "Add
+	// rule" creates an empty rule — so the instant anyone clicked it, every
+	// alert on the cluster was claimed by a half-written rule and the whole
+	// preview turned one colour. A catch-all is a real thing to want at the
+	// bottom of a priority list, but it has to be asked for.
+	CatchAll bool `json:"catchAll,omitempty"`
+
 	// Name is for the operator, not the matcher.
 	Name string `json:"name,omitempty"`
 	// Match is the condition. Empty matches everything.
@@ -116,8 +124,25 @@ func orEmpty(r []Rule) []Rule {
 	return r
 }
 
+// IsEmpty reports whether this match has no conditions at all.
+func (m Match) IsEmpty() bool {
+	return m.Name == "" &&
+		len(m.Severity) == 0 &&
+		len(m.Namespace) == 0 &&
+		len(m.Kind) == 0 &&
+		len(m.Labels) == 0 &&
+		len(m.LabelsRegex) == 0
+}
+
 // Matches reports whether the alert satisfies every clause present.
+//
+// An empty match returns false. A rule that claims everything by accident is
+// far more damaging than one that claims nothing: it hides every alert, or
+// relabels every alert, the moment it is created.
 func (m Match) Matches(a monitoring.Alert) bool {
+	if m.IsEmpty() {
+		return false
+	}
 	if m.Name != "" && !strings.Contains(strings.ToLower(a.Name), strings.ToLower(m.Name)) {
 		return false
 	}
@@ -160,7 +185,13 @@ func oneOf(want []string, got string) bool {
 // anyMatch reports whether any enabled rule matches, and which one.
 func anyMatch(rs []Rule, a monitoring.Alert) (Rule, bool) {
 	for _, r := range rs {
-		if r.Enabled && r.Match.Matches(a) {
+		if !r.Enabled {
+			continue
+		}
+		if r.CatchAll && r.Match.IsEmpty() {
+			return r, true
+		}
+		if r.Match.Matches(a) {
 			return r, true
 		}
 	}
@@ -224,9 +255,14 @@ func (c Config) Apply(alerts []monitoring.Alert) ([]monitoring.Alert, []Decision
 	return outA, outD
 }
 
+// hasEnabled reports whether any rule can actually match something.
+//
+// An enabled but empty rule does not count. Otherwise adding a blank show rule
+// would switch the list to opt-in and hide every alert on the cluster while
+// somebody was still typing the first condition.
 func hasEnabled(rs []Rule) bool {
 	for _, r := range rs {
-		if r.Enabled {
+		if r.Enabled && (r.CatchAll || !r.Match.IsEmpty()) {
 			return true
 		}
 	}

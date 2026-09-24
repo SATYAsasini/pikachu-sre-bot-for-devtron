@@ -19,6 +19,7 @@ import (
 	"github.com/devtron-labs/devtron-sre-agent/internal/capability"
 	"github.com/devtron-labs/devtron-sre-agent/internal/config"
 	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
+	"github.com/devtron-labs/devtron-sre-agent/internal/incidents"
 	"github.com/devtron-labs/devtron-sre-agent/internal/knowledge"
 	"github.com/devtron-labs/devtron-sre-agent/internal/runs"
 	"github.com/devtron-labs/devtron-sre-agent/internal/webui"
@@ -33,7 +34,10 @@ type Server struct {
 	Discoverer *devtron.Discoverer
 	Knowledge  *knowledge.Catalog
 	Runs       *runs.Service
-	Worker     *worker.Worker
+	// Incidents are the alerts we have taken responsibility for, as distinct
+	// from the live feed the cluster reports.
+	Incidents *incidents.Store
+	Worker    *worker.Worker
 	// Caps knows which clusters actually answer, as opposed to which ones
 	// Devtron lists.
 	Caps *capability.Service
@@ -69,6 +73,13 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/helm-apps", s.listHelmApps)
 		r.Get("/alerts", s.listAlerts)
 
+		// Tracked alerts: the ones we own, with a lifecycle. /alerts above is
+		// the live feed, which is a different thing entirely.
+		r.Get("/incidents", s.listIncidents)
+		r.Post("/incidents", s.trackIncident)
+		r.Get("/incidents/{id}", s.getIncident)
+		r.Patch("/incidents/{id}", s.patchIncident)
+
 		// Per-cluster alert rules: what to show, what to mute, what to
 		// investigate unprompted, and how urgent each one is.
 		r.Get("/rules", s.getRules)
@@ -82,6 +93,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/runs/{id}/events", s.runEvents)
 		r.Get("/runs/{id}/stream", s.streamRun)
 		r.Post("/runs/{id}/cancel", s.cancelRun)
+		// A run is a detail view of an alert. This is the way back.
+		r.Get("/runs/{id}/alert", s.incidentForRun)
 
 		r.Get("/settings", s.getSettings)
 		r.Put("/settings", s.putSettings)

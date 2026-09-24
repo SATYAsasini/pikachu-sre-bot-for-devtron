@@ -26,6 +26,7 @@ import (
 	"github.com/devtron-labs/devtron-sre-agent/internal/capability"
 	"github.com/devtron-labs/devtron-sre-agent/internal/config"
 	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
+	"github.com/devtron-labs/devtron-sre-agent/internal/incidents"
 	"github.com/devtron-labs/devtron-sre-agent/internal/knowledge"
 	"github.com/devtron-labs/devtron-sre-agent/internal/platform/log"
 	"github.com/devtron-labs/devtron-sre-agent/internal/platform/pg"
@@ -137,8 +138,11 @@ func run() error {
 	}
 
 	// --- worker ------------------------------------------------------------
+	incidentStore := incidents.NewStore(pool)
+
 	w := &worker.Worker{
 		Runs:                runSvc,
+		Incidents:           incidentStore,
 		Devtron:             dc,
 		Discoverer:          discoverer,
 		Knowledge:           catalog,
@@ -153,12 +157,16 @@ func run() error {
 		RunTimeout:          time.Duration(cfg.Run.TimeoutSeconds) * time.Second,
 	}
 	w.Start(ctx)
+	// Auto-rules only mean something if somebody is asking the cluster when
+	// nobody is looking at the screen.
+	w.StartSweeper(ctx)
 	defer w.Stop()
 
 	// --- http --------------------------------------------------------------
 	srv := &api.Server{
 		Cfg: cfg, Log: logger, Devtron: dc, Discoverer: discoverer,
 		Knowledge: catalog, Runs: runSvc, Worker: w, Caps: caps,
+		Incidents: incidentStore,
 	}
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTP.Addr,

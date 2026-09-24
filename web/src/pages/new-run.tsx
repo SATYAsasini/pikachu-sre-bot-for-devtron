@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ArrowRight, Boxes, EyeOff, History, RotateCw, Settings2, Sparkles } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, ArrowRight, Boxes, EyeOff, History, RotateCw, Settings2, ShieldCheck, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { cn } from 'cn'
 import { useHoverZone } from '@/lib/use-hover-zone'
@@ -13,13 +14,15 @@ import { Heading, Text } from '@/components/common/text'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { AlertCard } from '@/components/alerts/alert-card'
+import { IncidentRow } from '@/components/incidents/incident-row'
 import { AlertDetail } from '@/components/alerts/alert-detail'
 import { DebugDialog } from '@/components/alerts/debug-dialog'
 import { MonitoringPanel } from '@/components/scope/monitoring-panel'
 import { AgentFrames } from '@/components/agent/agent-frames'
 import { AiTrigger } from '@/components/agent/ai-trigger'
 import type { Mood } from '@/components/agent/mood'
-import { useAlerts, useMonitoring, useRuns } from '@/lib/queries'
+import { api } from '@/lib/api'
+import { qk, useAlerts, useMonitoring, useRuns } from '@/lib/queries'
 import { alertKey, priorRunsByAlert } from '@/lib/prior-runs'
 import { FilterBar } from '@/components/common/filter-bar'
 import { Listing } from '@/components/common/listing'
@@ -32,6 +35,14 @@ import { useReadiness } from '@/lib/readiness'
 import { SEARCH_EXPLAINS, SEARCH_HINT, SEARCH_MODES, matchesSearch, type SearchMode } from '@/lib/alert-meta'
 import { relativeTime } from '@/lib/format'
 import type { Alert, RunOptions } from '@/lib/types'
+
+type TrackedState = 'open' | 'resolved' | 'all'
+
+const TRACKED_STATES: { value: TrackedState; label: string }[] = [
+  { value: 'open', label: 'Open' },
+  { value: 'resolved', label: 'Solved' },
+  { value: 'all', label: 'All' },
+]
 
 const ASK_EXAMPLES = [
   'Why did the last rollout of payments-api sit in Progressing for twenty minutes?',
@@ -53,15 +64,32 @@ export function NewRunPage() {
   const ready = hasCluster(scope)
   const { start, pending } = useStartRun()
 
+  // Resolved alerts stay reachable, because the answer is the artefact: an
+  // alert whose RCA is written is the most useful row on the page the next
+  // time the same thing fires.
+  const [trackedState, setTrackedState] = useState<TrackedState>('open')
+
   const monitoring = useMonitoring(scope.clusterId)
   const alerts = useAlerts({ clusterId: scope.clusterId, limit: 200 }, ready)
   // A wider slice than the "Recent" strip needs, because it also answers
   // "has this alert already been investigated?" for every row in the list.
   // One query serves both rather than each alert row fetching for itself.
   const recent = useRuns({ limit: 100 })
+  const tracked = useQuery({
+    queryKey: qk.incidents(scope.clusterId, trackedState),
+    queryFn: () => api.incidents({ clusterId: scope.clusterId, state: trackedState }),
+    enabled: ready,
+    refetchInterval: 30_000,
+  })
   const prior = useMemo(() => priorRunsByAlert(recent.data ?? []), [recent.data])
 
   const [mode, setMode] = useState<SearchMode>('alert')
+  // Ours versus the cluster's. Two genuinely different things: a tracked alert
+  // is something we took responsibility for and can answer for; the live feed
+  // is a question asked of Alertmanager and forgotten. Showing them in one
+  // undifferentiated list is how somebody believes an alert is being handled
+  // when nobody ever claimed it.
+  const [feed, setFeed] = useState<'tracked' | 'live'>('tracked')
   const [query, setQuery] = useState('')
   const [detail, setDetail] = useState<Alert | null>(null)
   const [tuning, setTuning] = useState<Alert | null>(null)
@@ -77,7 +105,10 @@ export function NewRunPage() {
 
   // Twenty rows is a screen. A hundred is a document you scroll past looking
   // for where the page ends.
-  const paged = usePaged(list, 20)
+  const trackedList = useMemo(() => tracked.data ?? [], [tracked.data])
+  const livePaged = usePaged(list, 20)
+  const trackedPaged = usePaged(trackedList, 20)
+  const paged = feed === 'tracked' ? trackedPaged : livePaged
 
   // One number for the greeting. Severity spelling varies by alert source, so
   // it is matched loosely rather than compared to a constant.
@@ -133,18 +164,47 @@ export function NewRunPage() {
           onPage={paged.setPage}
           header={
             <PanelHeader
-              title="Firing now"
-              description={ready ? undefined : 'Pick a cluster in the bar above.'}
+              title={feed === 'tracked' ? 'Our alerts' : 'Live from the cluster'}
+              description={
+                !ready
+                  ? 'Pick a cluster in the bar above.'
+                  : feed === 'tracked'
+                    ? 'Alerts we took responsibility for, and what they turned out to be.'
+                    : 'Everything Alertmanager is reporting. Debug one and it becomes ours.'
+              }
               icon={<AlertTriangle aria-hidden className="size-3.5" />}
               actions={
-                ready && list.length > 0 ? (
-                  <Chip tone={list.length > 20 ? 'warn' : 'neutral'}>{list.length}</Chip>
-                ) : null
+                <Segmented
+                  value={feed}
+                  onChange={(f) => setFeed(f as 'tracked' | 'live')}
+                  options={[
+                    { value: 'tracked', label: `Ours${trackedList.length ? ` · ${trackedList.length}` : ''}` },
+                    { value: 'live', label: `Live${firing.length ? ` · ${firing.length}` : ''}` },
+                  ]}
+                  label="Which alerts to show"
+                />
               }
             />
           }
           toolbar={
-            ready && !unavailable && firing.length > 0 ? (
+            feed === 'tracked' ? (
+              ready && (trackedList.length > 0 || trackedState !== 'open') ? (
+                <div className="flex flex-wrap items-center gap-2 px-2.5 py-2">
+                  <Text tone="label" as="span">
+                    Show
+                  </Text>
+                  <Segmented
+                    value={trackedState}
+                    onChange={setTrackedState}
+                    options={TRACKED_STATES}
+                    label="Which tracked alerts to show"
+                  />
+                  <Text tone="fine" as="span" className="ml-auto">
+                    {trackedList.length} {trackedList.length === 1 ? 'alert' : 'alerts'}
+                  </Text>
+                </div>
+              ) : null
+            ) : feed === 'live' && ready && !unavailable && firing.length > 0 ? (
               <FilterBar
               label="Filter by"
               scope={
@@ -166,7 +226,41 @@ export function NewRunPage() {
             ) : null
           }
         >
-          {!ready ? (
+          {feed === 'tracked' ? (
+            !ready ? (
+              <EmptyState
+                icon={ArrowRight}
+                title="No cluster selected"
+                line="Choose one in the bar above to see the alerts we are carrying for it."
+              />
+            ) : tracked.isPending ? (
+              <RowSkeleton rows={4} />
+            ) : tracked.isError ? (
+              <ErrorState error={tracked.error} onRetry={() => void tracked.refetch()} />
+            ) : trackedList.length === 0 ? (
+              <EmptyState
+                icon={ShieldCheck}
+                title={trackedState === 'resolved' ? 'Nothing closed yet' : 'No alerts of ours yet'}
+                line={
+                  trackedState === 'resolved'
+                    ? 'Resolve an alert and it lands here with its root cause attached.'
+                    : 'An alert becomes ours the moment somebody debugs it, or when a rule picks it up. Browse what the cluster is reporting to claim one.'
+                }
+                action={
+                  <Button size="xs" variant="outline" onClick={() => setFeed('live')}>
+                    <AlertTriangle aria-hidden className="size-3" />
+                    Browse live alerts
+                  </Button>
+                }
+              />
+            ) : (
+              <ul className="space-y-2">
+                {trackedPaged.slice.map((a) => (
+                  <IncidentRow key={a.id} alert={a} />
+                ))}
+              </ul>
+            )
+          ) : !ready ? (
               <EmptyState
                 icon={ArrowRight}
                 title="No cluster selected"
@@ -198,7 +292,7 @@ export function NewRunPage() {
                  whole product is built around, so each one gets a boundary,
                  a surface and a shadow of its own. */
               <ul className="space-y-2">
-                {paged.slice.map((a, i) => (
+                {livePaged.slice.map((a, i) => (
                   <li key={`${a.fingerprint || a.name}-${i}`} className="relative">
                     <AlertCard alert={a} onExpand={setDetail} active={detail === a} prior={prior.get(alertKey(a))} />
                     {/* One click investigates with sensible defaults; the

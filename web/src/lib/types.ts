@@ -663,3 +663,77 @@ export interface RulePreview {
   byPriority: Record<Priority, number>
   unavailable?: string
 }
+
+/* ------------------------------------------------------------- incidents */
+
+export const ALERT_STATES = ['firing', 'acknowledged', 'resolved'] as const
+export type AlertState = (typeof ALERT_STATES)[number]
+
+/** What an investigation concluded, flattened for a dashboard row. */
+export interface Finding {
+  runId: string
+  rootCause?: string
+  action?: string
+  risk?: string
+  agrees: boolean
+  /** Devtron answered but nobody checked it. */
+  unverified?: boolean
+  confidence?: number
+  at: string
+}
+
+export interface RunRef {
+  runId: string
+  status: RunStatus
+  createdAt: string
+}
+
+/**
+ * An alert we took responsibility for.
+ *
+ * Distinct from the live feed, which is a question asked of the cluster and
+ * forgotten. This has an identity that survives flapping, a state, notes, and
+ * the investigations run against it.
+ */
+export interface TrackedAlert {
+  id: string
+  /** The handle people say out loud: "#42 is still open". */
+  seq: number
+  clusterId: number
+  clusterName: string
+  dedupKey: string
+
+  name: string
+  severity?: string
+  namespace?: string
+  kind?: string
+  resource?: string
+  summary?: string
+  labels?: Record<string, string>
+
+  priority: Priority
+  state: AlertState
+  origin: 'manual' | 'rule'
+
+  firstSeen: string
+  lastSeen: string
+  /** Why this table exists: one row however many times it fired. */
+  seenCount: number
+
+  ackedBy?: string
+  ackedAt?: string
+  resolvedAt?: string
+  notes?: string
+  updatedAt: string
+
+  runs?: RunRef[]
+  latest?: Finding
+}
+
+export interface AlertLogEntry {
+  id: number
+  at: string
+  kind: string
+  detail?: string
+  actor?: string
+}

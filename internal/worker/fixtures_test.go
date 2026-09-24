@@ -3,6 +3,8 @@ package worker
 import (
 	"strings"
 
+	"github.com/devtron-labs/devtron-sre-agent/internal/monitoring"
+	"github.com/devtron-labs/devtron-sre-agent/internal/rules"
 	"github.com/devtron-labs/devtron-sre-agent/internal/runs"
 )
 
@@ -60,5 +62,42 @@ func fxIntelligenceUnicode() *runs.Intelligence {
 		Analysis:      "日本語の分析：コンテナが起動しません。",
 		ThinkingCount: 2,
 		Thinking:      []string{"ポッドの状態を確認中", "イベントを取得中 🚨"},
+	}
+}
+
+// --- sweeper -----------------------------------------------------------
+
+// fxAlert is the shape the sweep sees: what an alert source published, before
+// anybody decided it mattered.
+func fxAlert(name, ns, resource, severity string) monitoring.Alert {
+	return monitoring.Alert{
+		Name:      name,
+		Namespace: ns,
+		Resource:  resource,
+		Severity:  severity,
+		State:     "firing",
+		Labels:    map[string]string{"alertname": name, "namespace": ns},
+	}
+}
+
+// fxCrashLoop is the alert every rule in these tests is written against.
+func fxCrashLoop() monitoring.Alert {
+	return fxAlert("KubePodCrashLooping", "prod", "payments-7d9f", "critical")
+}
+
+// fxNoisyInfo is the one nobody wants investigated.
+func fxNoisyInfo() monitoring.Alert {
+	return fxAlert("Watchdog", "monitoring", "", "none")
+}
+
+// fxAutoConfig claims critical alerts in prod and calls them P0.
+func fxAutoConfig() rules.Config {
+	return rules.Config{
+		ClusterID:   1,
+		AutoEnabled: true,
+		Auto:        []rules.Rule{{Name: "prod criticals", Match: rules.Match{Severity: []string{"critical"}}, Enabled: true}},
+		Priority: []rules.Rule{
+			{Name: "criticals page", Match: rules.Match{Severity: []string{"critical"}}, Priority: rules.P0, Enabled: true},
+		},
 	}
 }

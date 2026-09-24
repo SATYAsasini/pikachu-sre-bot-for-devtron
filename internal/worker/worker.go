@@ -12,6 +12,7 @@ import (
 	"github.com/devtron-labs/devtron-sre-agent/internal/agents"
 	"github.com/devtron-labs/devtron-sre-agent/internal/capability"
 	"github.com/devtron-labs/devtron-sre-agent/internal/devtron"
+	"github.com/devtron-labs/devtron-sre-agent/internal/incidents"
 	"github.com/devtron-labs/devtron-sre-agent/internal/knowledge"
 	"github.com/devtron-labs/devtron-sre-agent/internal/monitoring"
 	"github.com/devtron-labs/devtron-sre-agent/internal/rules"
@@ -30,10 +31,12 @@ type Worker struct {
 	Discoverer *devtron.Discoverer
 	Knowledge  *knowledge.Catalog
 	Caps       *capability.Service
-	Registry   *tools.Registry
-	Pipeline   *agents.Pipeline
-	Redact     func(string) string
-	Log        *slog.Logger
+	// Incidents links a finished investigation back to the alert it was about.
+	Incidents *incidents.Store
+	Registry  *tools.Registry
+	Pipeline  *agents.Pipeline
+	Redact    func(string) string
+	Log       *slog.Logger
 
 	// PublicURL is where this deployment is reachable, for links in
 	// notifications. Empty simply omits the link.
@@ -242,6 +245,10 @@ func (w *Worker) execute(parent context.Context, runID string) {
 	if out.Status == runs.StatusFailed && out.Report == nil {
 		msg = "the agents produced no usable report"
 	}
+	// Record the conclusion against the alert, so the dashboard shows what
+	// this turned out to be without anyone opening the run.
+	w.closeTheLoop(ctx, runID, out, log)
+
 	// Tell the channel what we found. After Finish rather than before, so a
 	// notification never describes a run that then failed to record.
 	w.notifyFinding(ctx, run, alert, out, log)
@@ -502,4 +509,32 @@ func unverifiedReport(analysis string) json.RawMessage {
 		return nil
 	}
 	return body
+}
+
+// closeTheLoop records a finished investigation against the alert it was about.
+//
+// An alert is the entity here; a run is something that happened to one. The
+// dashboard reads the finding off the alert, so a run that concludes without
+// writing back leaves the alert looking uninvestigated — which is how somebody
+// ends up debugging the same thing twice.
+func (w *Worker) closeTheLoop(ctx context.Context, runID string, out agents.Output, log *slog.Logger) {
+	if w.Incidents == nil {
+		return
+	}
+	alertID, ok := w.Incidents.ByRun(ctx, runID)
+	if !ok {
+		// A free-text run, or one started before alerts were tracked. Nothing
+		// to attach it to, and that is fine.
+		return
+	}
+
+	detail := "no usable report"
+	if out.Report != nil {
+		detail = "report written"
+	}
+	if out.Status == runs.StatusPartial {
+		detail = "Devtron answered; unverified"
+	}
+	w.Incidents.Log(ctx, alertID, incidents.LogRunFinished, detail, "")
+	log.Debug("attached finding to alert", "alert", alertID, "run", runID)
 }

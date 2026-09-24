@@ -70,3 +70,33 @@ func orEmptyRules(r []rules.Rule) []rules.Rule {
 	}
 	return r
 }
+
+// RuleCluster is a cluster that has rules configured.
+type RuleCluster struct {
+	ID   int
+	Name string
+}
+
+// AutoClusters lists the clusters whose master auto-investigate switch is on.
+//
+// Only those: a cluster with auto rules written but the switch off is a
+// cluster somebody is still drafting, and a sweep that ignored the switch
+// would start runs while they typed.
+func (s *Store) AutoClusters(ctx context.Context) ([]RuleCluster, error) {
+	rows, err := s.pool.Query(ctx,
+		`select cluster_id, cluster_name from cluster_rules where auto_enabled order by cluster_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RuleCluster
+	for rows.Next() {
+		var c RuleCluster
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

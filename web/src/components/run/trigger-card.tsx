@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { BellRing, BookOpen, ChevronRight, MessageSquareText } from 'lucide-react'
 import { cn } from 'cn'
@@ -10,7 +11,7 @@ import { alertMeta, hiddenMetaCount } from '@/lib/alert-meta'
 import { absoluteTime, humanise, relativeTime } from '@/lib/format'
 import { api } from '@/lib/api'
 import { qk } from '@/lib/queries'
-import type { IdentifiedComponent, Run } from '@/lib/types'
+import type { IdentifiedComponent, Run, TrackedAlert } from '@/lib/types'
 
 const SEVERITY_TONE: Record<string, Tone> = {
   critical: 'bad',
@@ -60,14 +61,58 @@ export function TriggerCard({
 }) {
   const alert = run.trigger.alert ?? null
 
+  // Which tracked alert this run belongs to. A run is an investigation *of*
+  // something; opening one from history and finding no way back to the alert
+  // it answered is how the run list stopped being navigable.
+  const owner = useQuery({
+    queryKey: qk.runAlert(run.id),
+    queryFn: () => api.runAlert(run.id),
+    enabled: Boolean(alert),
+    retry: false,
+    staleTime: 60_000,
+  })
+
   return (
     <section
       aria-label="What triggered this run"
       className="overflow-hidden rounded-xl border border-border bg-card shadow-card"
     >
+      {owner.data?.alert ? <OwnerStrip alert={owner.data.alert} /> : null}
       {alert ? <AlertTrigger alert={alert} /> : <AskTrigger ask={run.trigger.ask} />}
       <SubjectStrip component={component} onOpenKnowledge={onOpenKnowledge} />
     </section>
+  )
+}
+
+/**
+ * The alert this run answers, above everything else on the page.
+ *
+ * The number is the point: an investigation is worth having only if it can be
+ * referred to later, and "#42" is how somebody refers to it in a channel.
+ */
+function OwnerStrip({ alert }: { alert: TrackedAlert }) {
+  const tone: Tone = alert.state === 'resolved' ? 'ok' : alert.state === 'acknowledged' ? 'warn' : 'bad'
+  return (
+    <Link
+      to="/"
+      className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-border bg-well px-3 py-1.5 transition-colors hover:bg-well/60 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <Text tone="label" as="span">
+        Alert
+      </Text>
+      <span className="font-mono text-[0.6875rem] font-semibold">#{alert.seq}</span>
+      <Chip tone={alert.priority === 'P0' ? 'bad' : alert.priority === 'P1' ? 'warn' : 'neutral'}>
+        {alert.priority}
+      </Chip>
+      <Chip tone={tone}>{alert.state}</Chip>
+      {alert.seenCount > 1 ? (
+        <span className="text-[0.625rem] text-muted-foreground">seen {alert.seenCount.toLocaleString()}×</span>
+      ) : null}
+      <span className="ml-auto inline-flex items-center gap-0.5 text-[0.625rem] text-muted-foreground">
+        back to the dashboard
+        <ChevronRight aria-hidden className="size-2.5" />
+      </span>
+    </Link>
   )
 }
 

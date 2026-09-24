@@ -8,7 +8,11 @@ import type {
   Health,
   HelmApp,
   Harness,
+  Alert,
+  AlertLogEntry,
+  AlertState,
   NotifyConfig,
+  TrackedAlert,
   RulePreview,
   RulesConfig,
   KnowledgeComponent,
@@ -16,6 +20,7 @@ import type {
   ProbeResult,
   Run,
   RunEvent,
+  RunOptions,
   RunStatus,
   Settings,
   SettingsBody,
@@ -178,6 +183,36 @@ export const api = {
       : list(await request<KnowledgeComponent[] | null>('/knowledge', { params })),
 
   harness: (): Promise<Harness> => request<Harness>('/harness'),
+
+  /** Alerts we own, with their conclusions. The dashboard. */
+  incidents: async (params: { clusterId?: number; state?: string; limit?: number } = {}): Promise<TrackedAlert[]> => {
+    const res = await request<{ alerts: TrackedAlert[] | null } | null>('/incidents', { params })
+    return list(res?.alerts)
+  },
+
+  /** Which tracked alert a run was answering, if any. */
+  runAlert: (runId: string): Promise<{ alert: TrackedAlert }> =>
+    request(`/runs/${encodeURIComponent(runId)}/alert`),
+
+  incident: (id: string): Promise<{ alert: TrackedAlert; timeline: AlertLogEntry[] }> =>
+    request(`/incidents/${encodeURIComponent(id)}`),
+
+  /** Promotes a live alert into one we own, and optionally investigates it. */
+  trackAlert: (body: {
+    clusterId: number
+    clusterName?: string
+    alert: Alert
+    investigate?: boolean
+    options?: RunOptions
+    environmentId?: number
+    namespace?: string
+    appName?: string
+    appType?: string
+  }): Promise<{ alert: TrackedAlert; created: boolean; runId?: string; alreadyRunning?: boolean }> =>
+    request('/incidents', { method: 'POST', json: body }),
+
+  updateIncident: (id: string, body: { state?: AlertState; notes?: string }): Promise<{ alert: TrackedAlert }> =>
+    request(`/incidents/${encodeURIComponent(id)}`, { method: 'PATCH', json: body }),
 
   rules: (clusterId: number): Promise<RulesConfig> => request<RulesConfig>('/rules', { params: { clusterId } }),
 

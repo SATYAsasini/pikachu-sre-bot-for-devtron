@@ -46,6 +46,25 @@ export function useReadiness(): Readiness {
   const modelOk = config.data?.ready?.model ?? true
   const modelWhy = config.data?.ready?.modelBlockedBy ?? ''
 
+  // Why there is nothing usable, taken from what was actually measured.
+  // Telling somebody to check the orchestrator when every cluster answered
+  // in under a second sends them to the wrong place entirely.
+  const rows = caps.data ?? []
+  const count = (r: string) => rows.filter((c) => c.reach === r).length
+  const empty = count('empty')
+  const dead = count('unreachable') + count('error')
+  const refused = count('forbidden')
+  const whyBlocked =
+    empty > 0 && dead === 0 && refused === 0
+      ? empty === total
+        ? 'Every cluster answered but returned nothing — no pods, events, services, deployments or nodes, in any namespace Devtron knows about. Either they are genuinely idle, or this token cannot see into them. Widen the token to Kubernetes Resources → View with Resource name "All resources".'
+        : 'The clusters that answered returned nothing readable. Check the token has Kubernetes Resources → View on them.'
+      : refused > 0 && dead === 0
+        ? 'Devtron refused the reads. This is RBAC, not an outage — the token needs Kubernetes Resources → View on these clusters.'
+        : empty > 0
+          ? 'Some clusters could not be reached and the rest returned nothing. Check the orchestrator first, then the token’s RBAC.'
+          : 'Every cluster timed out or errored. That is the orchestrator failing to reach them, not a permissions problem.'
+
   const steps: SetupStep[] = [
     {
       key: 'connect',
@@ -68,12 +87,14 @@ export function useReadiness(): Readiness {
           ? 'Not measured yet.'
           : usable > 0
             ? `${usable} of ${total} clusters can be investigated.`
-            : `None of the ${total} listed clusters returned anything readable.`,
+            : `None of the ${total} listed ${total === 1 ? 'cluster' : 'clusters'} returned anything readable.` +
+              (empty > 0 ? ` ${empty} answered but had nothing in ${empty === 1 ? 'it' : 'them'}.` : '') +
+              (dead > 0 ? ` ${dead} could not be reached.` : ''),
       action:
         !connected || usable > 0
           ? undefined
           : probed
-            ? 'Every cluster timed out or errored. Check the orchestrator, or widen the token’s RBAC.'
+            ? whyBlocked
             : 'Run the probe to find out which clusters this token can actually read.',
     },
     {

@@ -36,32 +36,50 @@ func (e Environment) NamespaceKey() string {
 	return strconv.Itoa(e.ClusterID) + "_" + e.Namespace
 }
 
-// Clusters lists the clusters this token can actually work with.
+// Clusters lists every cluster this Devtron knows about.
 //
-// Devtron's cluster autocomplete filters on explicit *cluster-level* RBAC by
-// default, and a token scoped to environments and applications — which is the
-// normal shape of a view-only token — gets an empty list from it while being
-// perfectly able to investigate those environments. Observed on a live
-// install: cluster/autocomplete returns [] while env/autocomplete/helm
-// returns every cluster the token uses.
+// Asked with auth=false, which is the unfiltered list. auth=true filters to
+// clusters the token holds explicit *cluster-level* RBAC on, and that is the
+// wrong question to ask here twice over. A view-only token scoped to
+// environments gets [] from it while being perfectly able to read those
+// environments; and on an install where it returns one cluster out of
+// twenty, the other nineteen silently never appear — not as unreachable, not
+// as forbidden, simply absent, with nothing on screen to say why.
 //
-// So the environment mapping is the primary source, because a cluster we can
-// reach through an environment is a cluster we can investigate. The
-// autocomplete endpoint is used to enrich and to catch clusters that have no
-// environments yet.
+// Deciding which clusters are usable is this service's own job, and it does
+// it by reading them: see the capability probe, which reports forbidden,
+// unreachable, empty or usable per cluster with the reason attached. A list
+// narrowed by RBAC before the probe runs takes that answer away.
+//
+// auth=true remains the fallback, because an install may refuse the
+// unfiltered list to a non-admin token, and the environment mapping is folded
+// in either way — a cluster reachable through an environment is one we can
+// investigate whatever the cluster-level grant says.
 func (c *Client) Clusters(ctx context.Context) ([]Cluster, error) {
 	byID := map[int]Cluster{}
 
-	// 1. Whatever cluster-level RBAC grants outright.
+	// 1. Everything Devtron knows, unfiltered.
 	q := url.Values{}
-	q.Set("auth", "true")
-	var scoped []Cluster
-	authErr := c.get(ctx, "/orchestrator/cluster/autocomplete", q, &scoped)
-	for _, cl := range scoped {
+	q.Set("auth", "false")
+	var all []Cluster
+	allErr := c.get(ctx, "/orchestrator/cluster/autocomplete", q, &all)
+	for _, cl := range all {
 		byID[cl.ID] = cl
 	}
 
-	// 2. Every cluster reachable through an environment.
+	// 2. Refused or empty: fall back to what cluster-level RBAC grants.
+	var authErr error
+	if len(byID) == 0 {
+		q.Set("auth", "true")
+		var scoped []Cluster
+		authErr = c.get(ctx, "/orchestrator/cluster/autocomplete", q, &scoped)
+		for _, cl := range scoped {
+			byID[cl.ID] = cl
+		}
+	}
+
+	// 3. Every cluster reachable through an environment, which catches the
+	//    token that can read an environment but was never granted its cluster.
 	envs, envErr := c.Environments(ctx)
 	if envErr == nil {
 		for _, e := range envs {
@@ -74,19 +92,10 @@ func (c *Client) Clusters(ctx context.Context) ([]Cluster, error) {
 		}
 	}
 
-	// 3. Nothing at all: ask without the RBAC filter before concluding the
-	//    token is useless, and let Devtron reject the read if it must.
 	if len(byID) == 0 {
-		q.Set("auth", "false")
-		var all []Cluster
-		if err := c.get(ctx, "/orchestrator/cluster/autocomplete", q, &all); err == nil {
-			for _, cl := range all {
-				byID[cl.ID] = cl
-			}
+		if allErr != nil {
+			return nil, allErr
 		}
-	}
-
-	if len(byID) == 0 {
 		if authErr != nil {
 			return nil, authErr
 		}

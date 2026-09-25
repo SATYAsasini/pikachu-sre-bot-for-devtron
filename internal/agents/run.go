@@ -38,7 +38,7 @@ const agentSRE = "sre"
 // Exported through SREToolNames so the API can describe the real harness
 // rather than the UI carrying a hand-copied list that drifts.
 var sreToolNames = []string{
-	"k8s.list", "k8s.get", "k8s.events",
+	"k8s.list", "k8s.get", "k8s.events", "k8s.logs",
 	"k8s.scrape_config",
 	"prom.metrics", "prom.discover_for", "prom.query", "prom.query_range", "prom.rules",
 	"alerts.list",

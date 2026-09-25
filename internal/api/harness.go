@@ -117,7 +117,7 @@ func (s *Server) harness(w http.ResponseWriter, _ *http.Request) {
 				"package": "k8s",
 				"api":     "GET /orchestrator/k8s/proxy/… and POST /orchestrator/k8s/resource/list",
 				"auth":    "Authorization: Bearer for the proxy, token: header for everything else",
-				"tools":   []string{"k8s.list", "k8s.get", "k8s.events", "k8s.scrape_config"},
+				"tools":   []string{"k8s.list", "k8s.get", "k8s.events", "k8s.logs", "k8s.scrape_config"},
 				"conversion": []string{
 					"The proxy is GET-only, so anything that would be a POST had to be expressed as a path.",
 					"Responses come back as either objects or as table rows depending on the endpoint; a single decoder promotes rows to objects, because the model cannot be asked to know the difference.",

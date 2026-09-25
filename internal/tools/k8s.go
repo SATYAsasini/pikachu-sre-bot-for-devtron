@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -35,6 +36,15 @@ type EventsArgs struct {
 	Limit     int    `json:"limit,omitempty" jsonschema:"maximum events, default 40"`
 }
 
+// LogsArgs asks for one container's log.
+type LogsArgs struct {
+	Namespace string `json:"namespace" jsonschema:"the pod's namespace"`
+	Pod       string `json:"pod" jsonschema:"the pod name, exactly as k8s.list reported it"`
+	Container string `json:"container" jsonschema:"the container name; required, and visible in the pod's spec.containers"`
+	TailLines int    `json:"tailLines,omitempty" jsonschema:"how many lines from the end, default 200, maximum 2000"`
+	Previous  bool   `json:"previous,omitempty" jsonschema:"read the container instance before the current one; this is where a CrashLoopBackOff or an OOMKill leaves its reason"`
+}
+
 // K8sTools are the cluster-read tools, all served through the Devtron
 // orchestrator rather than a Kubernetes client.
 func K8sTools() []Tool {
@@ -50,7 +60,83 @@ func K8sTools() []Tool {
 		Define[EventsArgs]("k8s.events", "k8s",
 			"Read recent Kubernetes events for a namespace or one object. Events usually state plainly why scheduling, mounting, pulling or probing failed, so reach for this before reasoning from metrics.",
 			listEvents),
+
+		Define[LogsArgs]("k8s.logs", "k8s",
+			"Read the tail of one container's log. For a pod that is crashing or was OOMKilled, set previous=true — the current instance is usually too young to have said anything, and the reason is in the instance that died. Events tell you a container restarted; this tells you what it was doing when it did.",
+			podLogs),
 	}
+}
+
+// podLogs reads one container's log tail.
+//
+// Bounded twice over, because the orchestrator bounds it not at all: it
+// buffers the whole log in memory before sending, so tailLines and the byte
+// cap in the client are the only limits that exist.
+func podLogs(ctx context.Context, d *Deps, a LogsArgs) (*Result, error) {
+	if d == nil || d.Devtron == nil {
+		return Fail(ErrPlatform, "no_devtron_client", "the Devtron client is not configured", false), nil
+	}
+	if a.Pod == "" {
+		return Fail(ErrInput, "missing_pod", "a pod name is required", false), nil
+	}
+	if a.Container == "" {
+		return Fail(ErrInput, "missing_container", "a container name is required", false,
+			"run k8s.get on the pod and read spec.containers[].name"), nil
+	}
+	ns := a.Namespace
+	if ns == "" {
+		ns = d.Cluster.Namespace
+	}
+
+	key := Key("k8s.logs", a)
+	return Cached(ctx, d, key, func() (*Result, error) {
+		text, err := d.Devtron.PodLogs(ctx, devtron.PodLogOptions{
+			ClusterID: d.Cluster.ID,
+			Namespace: ns,
+			Pod:       a.Pod,
+			Container: a.Container,
+			TailLines: a.TailLines,
+			Previous:  a.Previous,
+		})
+		which := "current"
+		if a.Previous {
+			which = "previous"
+		}
+		if errors.Is(err, devtron.ErrNoPreviousContainer) {
+			// Worth saying rather than reporting as a failure: it means the
+			// container has not restarted, which is itself a finding.
+			return &Result{
+				Summary:   fmt.Sprintf("%s/%s container %s has no previous instance, so it has not restarted", ns, a.Pod, a.Container),
+				Freshness: Now("devtron"),
+				AgentContext: map[string]any{
+					"namespace": ns, "pod": a.Pod, "container": a.Container, "restarted": false,
+				},
+			}, nil
+		}
+		if err != nil {
+			return devtronFail(err, fmt.Sprintf("read %s logs for %s/%s", which, ns, a.Pod)), nil
+		}
+
+		lines := 0
+		if text != "" {
+			lines = strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
+		}
+		res := &Result{
+			Summary: fmt.Sprintf("%d lines from the %s instance of %s/%s container %s",
+				lines, which, ns, a.Pod, a.Container),
+			Data:      map[string]any{"log": text},
+			Freshness: Now("devtron"),
+			AgentContext: map[string]any{
+				"namespace": ns, "pod": a.Pod, "container": a.Container, "previous": a.Previous,
+			},
+			Truncated: len(text) >= devtron.MaxLogBytes,
+		}
+		if text == "" {
+			res.Summary = fmt.Sprintf("the %s instance of %s/%s container %s has written nothing",
+				which, ns, a.Pod, a.Container)
+		}
+		return res, nil
+	})
 }
 
 func listResources(ctx context.Context, d *Deps, a ListArgs) (*Result, error) {

@@ -146,11 +146,31 @@ func (e *Error) Reason() string {
 	case e.Status == http.StatusNotFound:
 		return "HTTP 404 — no such Service in that namespace, or the proxy rejected the path."
 	case e.Status == http.StatusServiceUnavailable:
-		return "HTTP 503 — the orchestrator accepted the request but the Service did not answer. Usually the wrong port, or nothing serving HTTP on it."
+		if looksLikeDevtronErrorPage(e.Body) {
+			return "HTTP 503 — Devtron's own error page came back, so the request did not reach the Service. The orchestrator could not route to this cluster's Kubernetes proxy; it is not a statement about the Service itself."
+		}
+		return "HTTP 503 — the Service was reached and refused: " + Truncate(oneLine(e.Body), 140)
 	case e.Status >= 500:
 		return fmt.Sprintf("HTTP %d — the orchestrator failed while serving this.", e.Status)
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.Status, Truncate(e.Body, 160))
+}
+
+// looksLikeDevtronErrorPage reports whether a body is Devtron's branded HTML
+// error page rather than anything the target Service said.
+//
+// The distinction matters: the same 503 means "Devtron could not route this"
+// when it carries that page, and "the Service said no" when it carries
+// something else. Treating them alike produced advice about ports on
+// services whose ports were identical to ones that worked.
+func looksLikeDevtronErrorPage(body string) bool {
+	b := strings.ToLower(body)
+	return strings.Contains(b, "<!doctype html") || strings.Contains(b, "<html")
+}
+
+// oneLine flattens a body so it can sit on a single row.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // Unauthorized reports a token problem rather than a missing object.

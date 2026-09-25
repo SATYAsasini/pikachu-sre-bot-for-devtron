@@ -119,7 +119,16 @@ export function CopyValue({
 }
 
 /** Truncating text with the full string on hover. For summaries and asks. */
-export function Truncated({ text, className, lines = 1 }: { text: string; className?: string; lines?: 1 | 2 }) {
+export function Truncated({
+  text,
+  className,
+  lines = 1,
+}: {
+  text?: string
+  className?: string
+  lines?: 1 | 2
+}) {
+  if (!text) return null
   return (
     <Tooltip>
       <TooltipTrigger asChild>

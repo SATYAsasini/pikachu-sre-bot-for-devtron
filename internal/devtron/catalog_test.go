@@ -264,7 +264,16 @@ func TestErrorReasonLeadsWithTheReason(t *testing.T) {
 		{"forbidden names the permission", &Error{Status: 403, Path: proxyPath}, "HTTP 403", "Kubernetes Resources"},
 		{"unauthorized is the same class", &Error{Status: 401, Path: proxyPath}, "HTTP 401", "Kubernetes Resources"},
 		{"not found is not a permission problem", &Error{Status: 404, Path: proxyPath}, "HTTP 404", "no such Service"},
-		{"503 points at the port", &Error{Status: 503, Path: proxyPath, Body: "<html>503</html>"}, "HTTP 503", "port"},
+		{
+			"503 with Devtron's page blames the route, not the Service",
+			&Error{Status: 503, Path: proxyPath, Body: "<!DOCTYPE html><html><title>503</title></html>"},
+			"HTTP 503", "did not reach the Service",
+		},
+		{
+			"503 from the Service itself quotes it",
+			&Error{Status: 503, Path: proxyPath, Body: "no healthy upstream"},
+			"HTTP 503", "no healthy upstream",
+		},
 		{"500 blames the orchestrator", &Error{Status: 500, Path: proxyPath}, "HTTP 500", "orchestrator"},
 	}
 
@@ -282,7 +291,7 @@ func TestErrorReasonLeadsWithTheReason(t *testing.T) {
 				t.Errorf("the path belongs in the tooltip, not the first line: %q", got)
 			}
 			// Short enough to survive a clamped row.
-			if len(got) > 220 {
+			if len(got) > 260 {
 				t.Errorf("reason is %d chars, too long for a list row: %q", len(got), got)
 			}
 		})

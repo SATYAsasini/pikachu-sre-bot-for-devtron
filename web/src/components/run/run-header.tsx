@@ -96,7 +96,7 @@ export function RunHeader({
           {alert ? (
             <>
               <span className="shrink-0 font-medium text-foreground">{alert.name}</span>
-              <Chip tone={severityTone(alert.severity)}>{alert.severity}</Chip>
+              {alert.severity ? <Chip tone={severityTone(alert.severity)}>{alert.severity}</Chip> : null}
               <Truncated text={alert.summary} className="min-w-0" />
             </>
           ) : (

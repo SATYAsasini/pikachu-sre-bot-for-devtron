@@ -212,21 +212,30 @@ export interface HelmApp {
 
 /* ---------------------------------------------------------------- alerts */
 
+/**
+ * One firing or pending alert.
+ *
+ * Optional where the server is `omitempty`, which is almost everywhere. This
+ * used to declare them all required, and the type was simply wrong: an alert
+ * with no severity arrives with no severity key, and code that trusted the
+ * type crashed the page on the first one. Anything not marked required here
+ * can genuinely be absent.
+ */
 export interface Alert {
   name: string
   state: string
-  severity: string
-  summary: string
-  description: string
+  source: string
+  severity?: string
+  summary?: string
+  description?: string
   labels?: Record<string, string> | null
   annotations?: Record<string, string> | null
-  startsAt: string
-  fingerprint: string
-  source: string
-  expression: string
-  namespace: string
-  kind: string
-  resource: string
+  startsAt?: string
+  fingerprint?: string
+  expression?: string
+  namespace?: string
+  kind?: string
+  resource?: string
 }
 
 /**

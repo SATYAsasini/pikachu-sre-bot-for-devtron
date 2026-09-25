@@ -119,7 +119,7 @@ function OwnerStrip({ alert }: { alert: TrackedAlert }) {
 function AlertTrigger({ alert }: { alert: NonNullable<Run['trigger']['alert']> }) {
   const meta = alertMeta(alert, 5)
   const hidden = hiddenMetaCount(alert, meta.length)
-  const tone = SEVERITY_TONE[alert.severity?.toLowerCase()] ?? 'neutral'
+  const tone = SEVERITY_TONE[(alert.severity ?? '').toLowerCase()] ?? 'neutral'
   const labels = Object.entries(alert.labels ?? {})
   const annotations = Object.entries(alert.annotations ?? {})
 

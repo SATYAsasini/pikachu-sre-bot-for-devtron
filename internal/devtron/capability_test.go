@@ -197,8 +197,9 @@ func TestReachCheckAsksNamespacesThenReads(t *testing.T) {
 	if len(cap.Namespaces) != 2 {
 		t.Errorf("the namespace grant is the useful part, got %v", cap.Namespaces)
 	}
-	if n, k := f.nsProbes(), f.kindProbes(); n != 1 || k != 1 {
-		t.Errorf("want one namespace call and one read, got %d and %d", n, k)
+	// One namespace listing, then the node read that settles it.
+	if n, k := f.nsProbes(), f.kindProbes(); n != 1 || k != 2 {
+		t.Errorf("want one namespace call and two reads, got %d and %d", n, k)
 	}
 }
 
@@ -261,7 +262,7 @@ func TestGrantedButEmptyIsNotUsable(t *testing.T) {
 	if cap.Reach != ReachEmpty {
 		t.Fatalf("want empty, got %s", cap.Reach)
 	}
-	if !strings.Contains(cap.Detail, "no pods are visible") {
+	if !strings.Contains(cap.Detail, "no pods in the") {
 		t.Errorf("it must say what was missing, got %q", cap.Detail)
 	}
 }
@@ -342,14 +343,17 @@ func TestProbeRecordsWhatItAsked(t *testing.T) {
 	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
 
 	cap := p.Probe(t.Context(), 1, "scoped", nil)
-	if len(cap.Steps) != 2 {
+	if len(cap.Steps) != 3 {
 		t.Fatalf("want a step per question, got %d: %+v", len(cap.Steps), cap.Steps)
 	}
 	if !strings.Contains(cap.Steps[0].Ask, "namespaces") || cap.Steps[0].Outcome != "answered with 1" {
 		t.Errorf("first step: %+v", cap.Steps[0])
 	}
-	if !strings.Contains(cap.Steps[1].Ask, "Pod") || cap.Steps[1].Outcome != "answered with 4" {
-		t.Errorf("second step: %+v", cap.Steps[1])
+	if !strings.Contains(cap.Steps[1].Ask, "Node") {
+		t.Errorf("second step should be the node attempt: %+v", cap.Steps[1])
+	}
+	if !strings.Contains(cap.Steps[2].Ask, "Pod") || cap.Steps[2].Outcome != "answered with 4" {
+		t.Errorf("third step: %+v", cap.Steps[2])
 	}
 	for i, st := range cap.Steps {
 		if st.Path == "" {
@@ -433,14 +437,17 @@ func TestReachProbeNeverReadsAcrossTheWholeCluster(t *testing.T) {
 	if cap.Reach != ReachUsable {
 		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
 	}
+	// Nodes may be read cluster-wide — a handful of objects, no namespace to
+	// guess. Pods may never be: that is the read that fetches every object
+	// in the cluster before discarding almost all of them.
 	for _, st := range cap.Steps {
-		if strings.Contains(st.Ask, "across the cluster") {
-			t.Errorf("the probe asked cluster-wide: %q", st.Ask)
+		if strings.Contains(st.Ask, "Pod") && strings.Contains(st.Ask, "across the cluster") {
+			t.Errorf("the probe listed pods cluster-wide: %q", st.Ask)
 		}
 	}
-	// It stops at the first namespace that answers with something.
-	if n := f.kindProbes(); n != 1 {
-		t.Errorf("want one object read, got %d", n)
+	// The node attempt, then the namespace that answers.
+	if n := f.kindProbes(); n != 2 {
+		t.Errorf("want two object reads, got %d", n)
 	}
 }
 
@@ -461,8 +468,9 @@ func TestReachProbeTriesEachNamespaceThenStops(t *testing.T) {
 	if cap.Reach != ReachEmpty {
 		t.Fatalf("want empty, got %s", cap.Reach)
 	}
-	if n := f.kindProbes(); n != maxProbeNamespaces {
-		t.Errorf("want %d reads, got %d", maxProbeNamespaces, n)
+	// The node attempt, then each namespace up to the cap.
+	if n := f.kindProbes(); n != maxProbeNamespaces+1 {
+		t.Errorf("want %d reads, got %d", maxProbeNamespaces+1, n)
 	}
 	// And it says which ones it looked in, so "empty" is checkable.
 	if !strings.Contains(cap.Detail, "a, b, c") {
@@ -492,8 +500,104 @@ func TestSlowReadIsNotReportedAsUnreachable(t *testing.T) {
 	if !strings.Contains(cap.Detail, "slow, not unreachable") {
 		t.Errorf("the contradiction must be stated plainly, got %q", cap.Detail)
 	}
-	// And both steps are on the record, so the contradiction is checkable.
-	if len(cap.Steps) != 2 {
-		t.Errorf("want both steps recorded, got %d", len(cap.Steps))
+	// And every step is on the record, so the contradiction is checkable.
+	if len(cap.Steps) < 2 {
+		t.Errorf("want the steps recorded, got %d", len(cap.Steps))
+	}
+}
+
+// The grant list arrives alphabetical, so sampling the front of it samples
+// whatever sorts first. On a cluster with ninety-five namespaces that was
+// alpha, apache and argo — all empty — and a cluster running 227 pods was
+// reported idle. Devtron's own environment mapping names the namespaces that
+// have deployments in them, so those are asked first.
+func TestWorkloadNamespacesAreProbedBeforeTheAlphabet(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces:    []string{"alpha", "apache", "argo", "devtroncd", "zzz"},
+		ListKinds:     map[string]int{},
+		NamespacePods: map[string]int{"devtroncd": 227},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	// Devtron maps one environment here, and it is not near the front of the
+	// alphabet.
+	cap := p.Probe(t.Context(), 1, "big", []string{"devtroncd"})
+	if cap.Reach != ReachUsable {
+		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
+	}
+	// The node attempt finds nothing, then devtroncd answers first — not
+	// alpha, apache or argo, which sort ahead of it.
+	if n := f.kindProbes(); n != 2 {
+		t.Errorf("want the node attempt then devtroncd, got %d reads", n)
+	}
+}
+
+// And when the sample really does come back empty, it says it was a sample.
+func TestEmptySaysHowManyItLookedAt(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"a", "b", "c", "d", "e"},
+		ListKinds:  map[string]int{},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "idle", nil)
+	if cap.Reach != ReachEmpty {
+		t.Fatalf("want empty, got %s", cap.Reach)
+	}
+	if !strings.Contains(cap.Detail, "5 namespace") || !strings.Contains(cap.Detail, "3 looked at") {
+		t.Errorf("it must not claim more than it checked, got %q", cap.Detail)
+	}
+}
+
+// Sampling namespaces cannot prove a cluster is idle — three of ninety-five
+// is a lottery, and it lost twice on a real installation. Nodes settle it
+// outright: every live cluster has some, there are a handful rather than
+// hundreds of thousands, and the list needs no namespace guess.
+func TestNodesSettleItWithoutGuessingANamespace(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"alpha", "apache", "argo"}, // all empty, as they were
+		ListKinds:  map[string]int{"Node": 5},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "big", nil)
+	if cap.Reach != ReachUsable {
+		t.Fatalf("a cluster with nodes is running: %s (%s)", cap.Reach, cap.Detail)
+	}
+	// One namespace listing, one node listing. No namespace sampling at all.
+	if n := f.kindProbes(); n != 1 {
+		t.Errorf("want the node read alone, got %d object reads", n)
+	}
+}
+
+// A token scoped to namespaces is refused the node list, and that proves
+// nothing — it must fall through to the namespaces it can actually read.
+func TestARefusedNodeListFallsThroughToNamespaces(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces:    []string{"devtroncd"},
+		ListKinds:     map[string]int{}, // no nodes visible
+		NamespacePods: map[string]int{"devtroncd": 12},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "scoped", []string{"devtroncd"})
+	if cap.Reach != ReachUsable {
+		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
+	}
+	// The node attempt, then the namespace that actually answers.
+	if n := f.kindProbes(); n != 2 {
+		t.Errorf("want node then namespace, got %d reads", n)
 	}
 }

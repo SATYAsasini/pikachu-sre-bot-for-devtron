@@ -332,6 +332,13 @@ func (d *Discoverer) cached(clusterID int) *MonitoringStack {
 	return nil
 }
 
+// Cached returns what is stored for a cluster, or nil, and never probes.
+// This is what a list of fifty clusters reads: one map lookup each, so the
+// page can say whether monitoring was found without walking anything.
+func (d *Discoverer) Cached(clusterID int) *MonitoringStack {
+	return d.cached(clusterID)
+}
+
 // Stale reports whether a cluster's stack is older than the refresh window,
 // for a caller deciding whether to offer a re-probe. It never causes one.
 func (d *Discoverer) Stale(clusterID int) bool {

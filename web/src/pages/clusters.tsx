@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertTriangle, EyeOff, Save, Server, Sparkles, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, EyeOff, Gauge, Save, Search, Server, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from 'cn'
 import { Button } from '@/components/ui/button'
@@ -83,10 +83,15 @@ export function ClustersPage() {
   const { scope, setScope } = useScope()
   const clusters = useClusters()
   const [tab, setTab] = useState<Tab>('rules')
+  // An installation can list fifty clusters. A grid of fifty cards with no
+  // way to narrow it is a grid nobody reads.
+  const [query, setQuery] = useState('')
 
   // Default to whatever the top bar is scoped to, then the first usable one.
-  const list = clusters.data ?? []
-  const selected = list.find((c) => c.id === scope.clusterId) ?? list[0]
+  const all = clusters.data ?? []
+  const needle = query.trim().toLowerCase()
+  const list = needle === '' ? all : all.filter((c) => c.clusterName.toLowerCase().includes(needle))
+  const selected = all.find((c) => c.id === scope.clusterId) ?? all[0]
   const clusterId = selected?.id ?? 0
   const clusterName = selected?.clusterName
   const ready = clusterId !== 0
@@ -100,7 +105,7 @@ export function ClustersPage() {
       </Panel>
     )
   }
-  if (list.length === 0) {
+  if (all.length === 0) {
     return (
       <Panel>
         <PanelBody>
@@ -125,34 +130,63 @@ export function ClustersPage() {
         </Text>
       </header>
 
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            id="cluster-search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${all.length} clusters`}
+            aria-label="Search clusters by name"
+            className="w-full rounded-lg border border-border bg-card py-1.5 pr-2.5 pl-8 font-mono text-xs focus:border-accent-strong/50 focus:ring-[3px] focus:ring-ring/30 focus:outline-none"
+          />
+        </div>
+        <Text tone="fine" as="span">
+          {needle === '' ? `${all.length} clusters` : `${list.length} of ${all.length}`}
+        </Text>
+      </div>
+
       {/* One card per cluster. Selecting also moves the global scope, so the
           alert list you go back to is the one you just configured. */}
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {list.map((c) => {
-          const on = c.id === clusterId
-          return (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setScope({ clusterId: c.id, clusterName: c.clusterName })}
-              aria-current={on ? 'true' : undefined}
-              className={cn(
-                'rounded-xl border-2 bg-card px-3 py-2.5 text-left shadow-card transition-all',
-                'hover:-translate-y-px hover:shadow-raised',
-                'focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none',
-                on ? 'border-accent-strong' : 'border-border hover:border-accent-strong/40',
-              )}
-            >
-              <span className="flex items-center gap-1.5">
-                <Server aria-hidden className={cn('size-3.5 shrink-0', on ? 'text-accent-strong' : 'text-muted-foreground')} />
-                <span className="truncate font-mono text-xs font-semibold">{c.clusterName}</span>
-                {on ? <Chip tone="accent" className="ml-auto shrink-0">editing</Chip> : null}
-              </span>
-              <ClusterSummary cluster={c} />
-            </button>
-          )
-        })}
-      </div>
+      {list.length === 0 ? (
+        <Text tone="fine">No cluster matches “{query}”.</Text>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {list.map((c) => {
+            const on = c.id === clusterId
+            const select = () => setScope({ clusterId: c.id, clusterName: c.clusterName })
+            return (
+              <div
+                key={c.id}
+                aria-current={on ? 'true' : undefined}
+                className={cn(
+                  'overflow-hidden rounded-xl border-2 bg-card shadow-card transition-all',
+                  'focus-within:ring-[3px] focus-within:ring-ring/50',
+                  on ? 'border-accent-strong' : 'border-border hover:border-accent-strong/40',
+                )}
+              >
+                <button type="button" onClick={select} className="w-full px-3 pt-2.5 pb-1.5 text-left focus:outline-none">
+                  <span className="flex items-center gap-1.5">
+                    <Server aria-hidden className={cn('size-3.5 shrink-0', on ? 'text-accent-strong' : 'text-muted-foreground')} />
+                    <span className="truncate font-mono text-xs font-semibold">{c.clusterName}</span>
+                    {on ? <Chip tone="accent" className="ml-auto shrink-0">editing</Chip> : null}
+                  </span>
+                  <ClusterSummary cluster={c} />
+                </button>
+                <MonitoringButton
+                  cluster={c}
+                  onOpen={() => {
+                    select()
+                    setTab('monitoring')
+                  }}
+                />
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border pb-2">
         {(
@@ -192,27 +226,68 @@ export function ClustersPage() {
   )
 }
 
-/** A one-line "is anything configured here" for the cluster cards. */
+/**
+ * A one-line "is anything configured here" for the cluster cards.
+ *
+ * Read off the row the list already carries. This used to fetch a cluster's
+ * rules itself, which is one request per card — fine at two clusters, and
+ * fifty-two requests on first paint at fifty-two.
+ */
 function ClusterSummary({ cluster }: { cluster: Cluster }) {
-  const clusterId = cluster.id
-  const q = useQuery({ queryKey: qk.rules(clusterId), queryFn: () => api.rules(clusterId), staleTime: 60_000 })
-  const cfg = q.data
-  if (!cfg) return <span className="mt-1 block text-[0.625rem] text-muted-foreground">…</span>
-
-  const ruleCount = (cfg.priority?.length ?? 0) + (cfg.mute?.length ?? 0) + (cfg.show?.length ?? 0)
+  const r = cluster.rules
+  const ruleCount = r?.rules ?? 0
   return (
     <span className="mt-1 flex flex-wrap items-center gap-1">
       <span className="text-[0.625rem] text-muted-foreground">
         {ruleCount === 0 ? 'no rules yet' : `${ruleCount} rule${ruleCount === 1 ? '' : 's'}`}
       </span>
-      {cfg.notify?.enabled ? (
+      {r?.notifying ? (
         <Chip tone="ok">notifying</Chip>
       ) : (
         <span className="text-[0.625rem] text-muted-foreground/70">· no channel</span>
       )}
-      {cfg.autoEnabled ? <Chip tone="warn">auto</Chip> : null}
+      {r?.auto ? <Chip tone="warn">auto</Chip> : null}
       {cluster.monitoringPinned ? <Chip tone="accent">pinned stack</Chip> : null}
     </span>
+  )
+}
+
+/**
+ * Whether this cluster has monitoring, and a way in.
+ *
+ * Four states, not two. "Never measured" is not "none found", and a cluster
+ * where the metrics half answered and the alerts half did not is not a
+ * cluster with monitoring — the agent can read numbers there and cannot list
+ * what is firing, and saying "monitoring" flat would hide that.
+ */
+function MonitoringButton({ cluster, onOpen }: { cluster: Cluster; onOpen: () => void }) {
+  const m = cluster.monitoring
+  const state = !m
+    ? { tone: 'unknown' as Tone, label: 'not measured', hint: 'nothing has looked yet' }
+    : m.metrics && m.alerts
+      ? { tone: 'ok' as Tone, label: 'monitoring', hint: 'metrics and alerts both answer' }
+      : m.metrics
+        ? { tone: 'warn' as Tone, label: 'metrics only', hint: 'no alert source answered' }
+        : m.alerts
+          ? { tone: 'warn' as Tone, label: 'alerts only', hint: 'no metrics backend answered' }
+          : { tone: 'bad' as Tone, label: 'none answered', hint: `${m.candidates ?? 0} candidates, none reachable` }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`${state.hint} — open the Monitoring tab`}
+      className={cn(
+        'flex w-full items-center gap-1.5 border-t border-border bg-well/60 px-3 py-1.5 text-left',
+        'transition-colors hover:bg-well focus:outline-none',
+      )}
+    >
+      <Gauge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+      <Chip tone={state.tone}>{state.label}</Chip>
+      <span className="ml-auto shrink-0 text-[0.625rem] text-muted-foreground">
+        {m ? 'configure' : 'check'}
+      </span>
+    </button>
   )
 }
 

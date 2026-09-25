@@ -191,6 +191,13 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		pinned = map[int]bool{}
 	}
+	// One query for every cluster's rule state. The page used to ask per
+	// card, which is fifty-two requests on first paint of a fifty-two
+	// cluster installation.
+	ruleState, err := s.Runs.Store.RuleSummaries(r.Context())
+	if err != nil {
+		ruleState = map[int]runs.RuleSummary{}
+	}
 
 	out := make([]map[string]any, 0, len(cs))
 	for _, c := range cs {
@@ -201,6 +208,21 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 		}
 		if pinned[c.ID] {
 			row["monitoringPinned"] = true
+		}
+		// What discovery already found, read from the stored map. Never a
+		// probe: this runs once per cluster on a page that can list fifty of
+		// them, and a list that measures as it renders is a list that never
+		// finishes.
+		if rs, ok := ruleState[c.ID]; ok {
+			row["rules"] = rs
+		}
+		if st := s.Discoverer.Cached(c.ID); st != nil {
+			row["monitoring"] = map[string]any{
+				"metrics":      st.HasMetrics(),
+				"alerts":       st.HasAlerts(),
+				"discoveredAt": st.DiscoveredAt,
+				"candidates":   len(st.Candidates),
+			}
 		}
 		// The measurement rides along, so the setup screen and the picker read
 		// the same row rather than each fetching its own idea of the truth.

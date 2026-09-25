@@ -291,7 +291,32 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 	// process down. Measured against a 52-cluster install: every one of the
 	// 27 reachable clusters timed out here, and none of them was
 	// unreachable.
-	tried := limitNamespaces(namespaces, maxProbeNamespaces)
+	// Ask the cheapest question that can settle it outright: are there nodes?
+	//
+	// Every live cluster has some, there are a handful rather than hundreds
+	// of thousands, and the list is cluster-scoped so it needs no namespace
+	// guess at all. When it answers, the cluster is readable and running and
+	// nothing further is needed. A token scoped to namespaces is refused it
+	// — Node's RBAC object is built with namespace "*", the same trap as
+	// listing Namespace — so a refusal here proves nothing and falls
+	// through.
+	nodes := p.probeKind(ctx, clusterID, GVKNode, "")
+	measured.Steps = append(measured.Steps, nodes.step(""))
+	if nodes.access.Allowed && nodes.access.Count > 0 {
+		measured.Reach = ReachUsable
+		measured.LatencyMs = time.Since(started).Milliseconds()
+		return measured
+	}
+
+	// Ask where the workloads actually are.
+	//
+	// The grant list arrives alphabetical, so sampling the first few of it
+	// is sampling whatever happens to sort first — on a cluster with
+	// ninety-five namespaces that was alpha, apache and argo, all empty,
+	// and the cluster running 227 pods was reported idle. The namespaces
+	// Devtron maps to this cluster are the ones with deployments in them,
+	// so they go first and the grant list follows.
+	tried := limitNamespaces(append(append([]string{}, fallback...), namespaces...), maxProbeNamespaces)
 	var refused bool
 	for _, ns := range tried {
 		pods := p.probeKind(ctx, clusterID, GVKPod, ns)
@@ -334,9 +359,12 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 		// Reachable and permitted, with nothing running. Offering it is
 		// offering an investigation that can only conclude nothing.
 		measured.Reach = ReachEmpty
+		// Say that this was a sample, and how big a one. "Nothing here" and
+		// "nothing in the three of ninety-five we looked at" are different
+		// claims and only one of them is true.
 		measured.Detail = fmt.Sprintf(
-			"reachable, and the token holds %d namespace(s) here, but no pods are visible in %s",
-			len(namespaces), strings.Join(tried, ", "))
+			"reachable, and the token holds %d namespace(s) here; no pods in the %d looked at (%s)",
+			len(namespaces), len(tried), strings.Join(tried, ", "))
 	}
 	return measured
 }

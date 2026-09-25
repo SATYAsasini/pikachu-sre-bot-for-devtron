@@ -100,3 +100,45 @@ func (s *Store) AutoClusters(ctx context.Context) ([]RuleCluster, error) {
 	}
 	return out, rows.Err()
 }
+
+// RuleSummary is the one-line state a cluster card shows.
+type RuleSummary struct {
+	Rules     int  `json:"rules"`
+	Notifying bool `json:"notifying"`
+	Auto      bool `json:"auto"`
+}
+
+// RuleSummaries reads every cluster's rule state in one query.
+//
+// The clusters page asked for this per card. That is fine at two clusters
+// and fifty-two requests at fifty-two, fired on first paint, against an
+// installation whose orchestrator is already the slowest thing in the
+// picture. The page needs a number and two booleans per cluster; that is one
+// query.
+func (s *Store) RuleSummaries(ctx context.Context) (map[int]RuleSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		select cluster_id,
+		       coalesce(jsonb_array_length(show), 0)
+		     + coalesce(jsonb_array_length(mute), 0)
+		     + coalesce(jsonb_array_length(priority), 0) as rules,
+		       coalesce((notify->>'enabled')::boolean, false) as notifying,
+		       auto_enabled
+		from cluster_rules`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[int]RuleSummary{}
+	for rows.Next() {
+		var (
+			id int
+			r  RuleSummary
+		)
+		if err := rows.Scan(&id, &r.Rules, &r.Notifying, &r.Auto); err != nil {
+			return nil, err
+		}
+		out[id] = r
+	}
+	return out, rows.Err()
+}

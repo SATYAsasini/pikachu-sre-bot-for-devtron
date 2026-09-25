@@ -68,6 +68,15 @@ export interface Cluster {
   investigable?: boolean
   /** An operator has pinned which monitoring endpoints this cluster uses. */
   monitoringPinned?: boolean
+  /** What discovery already found here. Read from store, never probed. */
+  monitoring?: {
+    metrics: boolean
+    alerts: boolean
+    discoveredAt?: string
+    candidates?: number
+  } | null
+  /** The cluster's rule state, summarised server-side. */
+  rules?: { rules: number; notifying: boolean; auto: boolean } | null
   /** What this token can see in the cluster, from the reach check. */
   namespaces?: string[] | null
   /** The verdict is Devtron's own connection status, not something measured. */

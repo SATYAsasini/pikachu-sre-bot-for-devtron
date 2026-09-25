@@ -278,26 +278,65 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 		return measured
 	}
 
-	// Then one read, across all namespaces. The list endpoint returns the
-	// rows the token can see whatever its scope, so this works for a
-	// cluster-wide grant and a namespace-scoped one alike — no per-namespace
-	// loop needed.
-	pods := p.probeKind(ctx, clusterID, GVKPod, "")
-	measured.Steps = append(measured.Steps, pods.step(""))
-	measured.LatencyMs = time.Since(started).Milliseconds()
+	// Then one read, inside a namespace we now know the token holds — never
+	// across the cluster.
+	//
+	// A cluster-wide list looks equivalent and is not. The orchestrator
+	// lists with its own credentials and filters the rows afterwards, so
+	// namespace:"" fetches every pod in every namespace before discarding
+	// all but the few the token can see. On a small cluster that is
+	// invisible; on a production one it is tens of thousands of objects,
+	// past the deadline every time, and megabytes of JSON held in memory
+	// per probe — which with a dozen probes in flight is enough to take the
+	// process down. Measured against a 52-cluster install: every one of the
+	// 27 reachable clusters timed out here, and none of them was
+	// unreachable.
+	tried := limitNamespaces(namespaces, maxProbeNamespaces)
+	var refused bool
+	for _, ns := range tried {
+		pods := p.probeKind(ctx, clusterID, GVKPod, ns)
+		measured.Steps = append(measured.Steps, pods.step(ns))
 
+		switch {
+		case pods.access.Allowed && pods.access.Count > 0:
+			measured.Reach = ReachUsable
+			measured.LatencyMs = time.Since(started).Milliseconds()
+			return measured
+		case pods.access.Allowed:
+			// Answered, empty. One idle namespace is not an idle cluster.
+		case pods.reach == ReachForbidden:
+			refused = true
+		default:
+			// Not unreachable — whatever this read did, the cluster answered
+			// the namespace listing one step above it. Reporting
+			// "the orchestrator could not reach the cluster" here
+			// contradicts the evidence this same probe just recorded, and
+			// sends an operator to look at a network path that is fine.
+			measured.Reach = ReachError
+			if pods.reach == ReachUnreachable {
+				measured.Detail = fmt.Sprintf(
+					"this cluster listed its namespaces, then a read in %s did not finish within %s — it is slow, not unreachable",
+					ns, p.Timeout)
+			} else {
+				measured.Detail = pods.access.Detail
+			}
+			measured.LatencyMs = time.Since(started).Milliseconds()
+			return measured
+		}
+	}
+
+	measured.LatencyMs = time.Since(started).Milliseconds()
 	switch {
-	case pods.access.Allowed && pods.access.Count > 0:
-		measured.Reach = ReachUsable
-	case pods.access.Allowed:
+	case refused:
+		measured.Reach = ReachForbidden
+		measured.Detail = "the token holds namespaces here but was refused a read in every one tried"
+	default:
 		// Reachable and permitted, with nothing running. Offering it is
 		// offering an investigation that can only conclude nothing.
 		measured.Reach = ReachEmpty
 		measured.Detail = fmt.Sprintf(
-			"reachable, and the token holds %d namespace(s) here, but no pods are visible in any of them",
-			len(namespaces))
-	default:
-		measured.Reach, measured.Detail = pods.reach, pods.access.Detail
+			"reachable, and the token holds %d namespace(s) here, but no pods are visible in %s",
+			len(namespaces), strings.Join(tried, ", "))
 	}
 	return measured
 }

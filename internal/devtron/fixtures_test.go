@@ -189,6 +189,10 @@ type fakeOpts struct {
 	ListErr bool
 	// ListDelay stalls the resource list.
 	ListDelay time.Duration
+	// KindDelay stalls only the kind-specific reads, leaving the namespace
+	// listing fast — the shape of a cluster that answers cheap calls and
+	// times out on expensive ones.
+	KindDelay time.Duration
 }
 
 func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
@@ -232,9 +236,13 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 		}
 		f.mu.Unlock()
 
-		if o.ListDelay > 0 {
+		delay := o.ListDelay
+		if o.ListKinds != nil && kindTarget[0] != "" && o.KindDelay > 0 {
+			delay = o.KindDelay
+		}
+		if delay > 0 {
 			select {
-			case <-time.After(o.ListDelay):
+			case <-time.After(delay):
 			case <-r.Context().Done():
 				return
 			}
@@ -251,9 +259,15 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 			kind, ns := kindTarget[0], kindTarget[1]
 			n := o.ListKinds[kind]
 			if ns != "" {
-				// A namespaced read only finds what that namespace holds.
-				n = 0
-				if kind == "Pod" {
+				// A namespaced read finds what that namespace holds. When a
+				// test says nothing about namespaces, the cluster's counts
+				// stand in — the reach probe is namespace-scoped now, so a
+				// fixture that only set ListKinds still means "this is what
+				// is there".
+				if len(o.NamespacePods) > 0 || kind != "Pod" {
+					n = 0
+				}
+				if kind == "Pod" && len(o.NamespacePods) > 0 {
 					n = o.NamespacePods[ns]
 				}
 			}

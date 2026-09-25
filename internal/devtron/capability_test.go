@@ -409,3 +409,91 @@ func TestDecodeNamespaceList(t *testing.T) {
 		}
 	}
 }
+
+// The reach probe must never ask for objects across the whole cluster.
+//
+// It looks equivalent to a namespaced read and is not: the orchestrator
+// lists with its own credentials and filters afterwards, so namespace:""
+// fetches every pod in every namespace before discarding all but the few
+// the token can see. On a 52-cluster production install that was past the
+// deadline on all 27 reachable clusters, and held megabytes of JSON per
+// probe — enough, a dozen at a time, to restart the process.
+func TestReachProbeNeverReadsAcrossTheWholeCluster(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces:    []string{"devtroncd", "monitoring"},
+		ListKinds:     map[string]int{},
+		NamespacePods: map[string]int{"devtroncd": 9},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "big", nil)
+	if cap.Reach != ReachUsable {
+		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
+	}
+	for _, st := range cap.Steps {
+		if strings.Contains(st.Ask, "across the cluster") {
+			t.Errorf("the probe asked cluster-wide: %q", st.Ask)
+		}
+	}
+	// It stops at the first namespace that answers with something.
+	if n := f.kindProbes(); n != 1 {
+		t.Errorf("want one object read, got %d", n)
+	}
+}
+
+// One idle namespace is not an idle cluster, so it keeps looking — but only
+// as far as the cap.
+func TestReachProbeTriesEachNamespaceThenStops(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces:    []string{"a", "b", "c", "d", "e"},
+		ListKinds:     map[string]int{},
+		NamespacePods: map[string]int{"e": 4}, // past the cap on purpose
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "idle", nil)
+	if cap.Reach != ReachEmpty {
+		t.Fatalf("want empty, got %s", cap.Reach)
+	}
+	if n := f.kindProbes(); n != maxProbeNamespaces {
+		t.Errorf("want %d reads, got %d", maxProbeNamespaces, n)
+	}
+	// And it says which ones it looked in, so "empty" is checkable.
+	if !strings.Contains(cap.Detail, "a, b, c") {
+		t.Errorf("detail must name the namespaces tried, got %q", cap.Detail)
+	}
+}
+
+// A cluster that listed its namespaces is not unreachable, whatever the next
+// read does. Saying otherwise contradicts the evidence the same probe just
+// recorded — and sends an operator to check a network path that is fine.
+func TestSlowReadIsNotReportedAsUnreachable(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd"},
+		ListKinds:  map[string]int{"Pod": 5},
+		KindDelay:  2 * time.Second, // only the object read is slow
+	})
+	defer f.Close()
+	// Long enough for the namespace listing, too short for the read.
+	p := &Prober{c: c, Timeout: 300 * time.Millisecond, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "slow", nil)
+	if cap.Reach == ReachUnreachable {
+		t.Fatalf("it answered a call; it is not unreachable: %+v", cap)
+	}
+	if !strings.Contains(cap.Detail, "slow, not unreachable") {
+		t.Errorf("the contradiction must be stated plainly, got %q", cap.Detail)
+	}
+	// And both steps are on the record, so the contradiction is checkable.
+	if len(cap.Steps) != 2 {
+		t.Errorf("want both steps recorded, got %d", len(cap.Steps))
+	}
+}

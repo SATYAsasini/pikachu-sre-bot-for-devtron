@@ -149,18 +149,51 @@ type Prober struct {
 	// and results are published as they land now, so the wall clock of the
 	// whole sweep matters much less than it did.
 	Concurrency int
+	// MaxInFlight bounds concurrent requests across the whole sweep, which is
+	// the thing the orchestrator actually feels.
+	//
+	// Capping clusters instead was too blunt in both directions. A cluster
+	// that cannot be reached costs one request, so four at a time left an
+	// install with forty dead clusters crawling through them in tens of
+	// waves; a cluster that answers costs five, so the same four could put
+	// twenty requests in flight and cause the very timeouts the cap was
+	// there to prevent. Counting requests gets both right: many dead
+	// clusters proceed together, and live ones throttle themselves.
+	MaxInFlight int
+
+	// gate is the request semaphore for the sweep in progress. Nil means
+	// unbounded, which is what a direct Probe call outside a sweep gets.
+	gate chan struct{}
 }
 
 // Probe bounds, overridable through config for installs where the
 // orchestrator is slower or faster than the one these were measured against.
 const (
 	DefaultProbeTimeout     = 20 * time.Second
-	DefaultProbeConcurrency = 4
+	DefaultProbeConcurrency = 16
+	DefaultProbeInFlight    = 12
 )
 
 // NewProber builds a prober with sensible bounds.
 func NewProber(c *Client) *Prober {
-	return &Prober{c: c, Timeout: DefaultProbeTimeout, Concurrency: DefaultProbeConcurrency}
+	return &Prober{
+		c: c, Timeout: DefaultProbeTimeout,
+		Concurrency: DefaultProbeConcurrency, MaxInFlight: DefaultProbeInFlight,
+	}
+}
+
+// acquire takes a slot in the request semaphore, or reports that the caller
+// gave up waiting for one.
+func (p *Prober) acquire(ctx context.Context) (func(), bool) {
+	if p.gate == nil {
+		return func() {}, true
+	}
+	select {
+	case p.gate <- struct{}{}:
+		return func() { <-p.gate }, true
+	case <-ctx.Done():
+		return func() {}, false
+	}
 }
 
 // Probe measures one cluster: can we reach it, and which kinds answer.
@@ -225,6 +258,13 @@ type kindProbe struct {
 
 // probeKind asks one kind, in one namespace ("" for every namespace).
 func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespace string) kindProbe {
+	release, ok := p.acquire(ctx)
+	if !ok {
+		access := KindAccess{Kind: gvk.Kind, Detail: string(ReachUnknown) + ": not reached before the sweep ended"}
+		return kindProbe{access: access, reach: ReachUnknown}
+	}
+	defer release()
+
 	kctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 
@@ -367,6 +407,10 @@ func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster, onResult func
 			}
 		}
 	}
+
+	// One semaphore for the whole sweep, counting requests rather than
+	// clusters. Rebuilt per sweep so a retuned bound takes effect.
+	p.gate = make(chan struct{}, max(1, p.MaxInFlight))
 
 	out := make([]Capability, len(clusters))
 	sem := make(chan struct{}, max(1, p.Concurrency))

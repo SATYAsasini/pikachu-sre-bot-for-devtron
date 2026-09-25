@@ -449,14 +449,14 @@ func TestTuneOverridesProbeBounds(t *testing.T) {
 	before := s.prober.Timeout
 
 	// Zero and negative values are "not configured" and must change nothing.
-	s.Tune(0, 0)
-	s.Tune(-1, -1)
+	s.Tune(0, 0, 0)
+	s.Tune(-1, -1, -1)
 	if s.prober.Timeout != before {
 		t.Errorf("an unset config changed the timeout to %v", s.prober.Timeout)
 	}
 
-	s.Tune(45*time.Second, 7)
-	if s.prober.Timeout != 45*time.Second || s.prober.Concurrency != 7 {
-		t.Errorf("tune did not apply: %v / %d", s.prober.Timeout, s.prober.Concurrency)
+	s.Tune(45*time.Second, 7, 9)
+	if s.prober.Timeout != 45*time.Second || s.prober.Concurrency != 7 || s.prober.MaxInFlight != 9 {
+		t.Errorf("tune did not apply: %v / %d / %d", s.prober.Timeout, s.prober.Concurrency, s.prober.MaxInFlight)
 	}
 }

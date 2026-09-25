@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Code, Mono } from '@/components/common/mono'
 import { Chip } from '@/components/common/status'
+import { ReachBreakdown } from '@/components/setup/reach-breakdown'
 import { errorMessage } from '@/lib/api'
 import {
   useAllClusters,
@@ -18,7 +19,6 @@ import {
   useTestSettings,
 } from '@/lib/queries'
 import { useReadiness, type SetupStep } from '@/lib/readiness'
-import type { Reach } from '@/lib/types'
 
 /**
  * The setup journey, as a sequence rather than a form.
@@ -273,15 +273,6 @@ function ConnectStep() {
   )
 }
 
-const REACH_TONE: Record<Reach, 'ok' | 'warn' | 'bad' | 'unknown'> = {
-  usable: 'ok',
-  empty: 'warn',
-  forbidden: 'bad',
-  error: 'bad',
-  unreachable: 'bad',
-  unknown: 'unknown',
-}
-
 /** Step 2. Measure, then show exactly what was measured. */
 function ReachStep() {
   const caps = useAllClusters()
@@ -326,29 +317,7 @@ function ReachStep() {
         )}
       </div>
 
-      {rows.length > 0 ? (
-        <ul className="divide-y divide-border rounded-md border border-border">
-          {/* Usable first: the ones that matter should not be below eight
-              timeouts, and the list is truncated. */}
-          {[...rows]
-            .sort((a, b) => Number(b.investigable ?? false) - Number(a.investigable ?? false))
-            .slice(0, running ? rows.length : 8)
-            .map((c) => (
-              <li key={c.id} className="flex items-center gap-2 px-2.5 py-1.5">
-                <Chip tone={REACH_TONE[c.reach ?? 'unknown']}>{c.reach ?? 'unknown'}</Chip>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{c.clusterName}</span>
-                <span className="tabular shrink-0 text-[0.6875rem] text-muted-foreground">{c.latencyMs ?? 0}ms</span>
-              </li>
-            ))}
-          {!running && rows.length > 8 && (
-            <li className="px-2.5 py-1.5 text-[0.6875rem] text-muted-foreground">…and {rows.length - 8} more.</li>
-          )}
-        </ul>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Nothing measured yet. Until then the picker shows everything Devtron lists, warts and all.
-        </p>
-      )}
+      <ReachBreakdown rows={rows} running={running} />
     </div>
   )
 }

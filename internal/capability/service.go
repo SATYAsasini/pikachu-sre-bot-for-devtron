@@ -95,12 +95,15 @@ func New(dc *devtron.Client, store Store, log *slog.Logger, ttl time.Duration) *
 
 // Tune overrides the probe bounds. Zero or negative values keep the defaults,
 // so an unset config changes nothing.
-func (s *Service) Tune(timeout time.Duration, concurrency int) {
+func (s *Service) Tune(timeout time.Duration, concurrency, inFlight int) {
 	if timeout > 0 {
 		s.prober.Timeout = timeout
 	}
 	if concurrency > 0 {
 		s.prober.Concurrency = concurrency
+	}
+	if inFlight > 0 {
+		s.prober.MaxInFlight = inFlight
 	}
 }
 

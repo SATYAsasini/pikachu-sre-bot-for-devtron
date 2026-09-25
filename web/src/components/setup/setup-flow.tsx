@@ -14,6 +14,7 @@ import {
   useRefreshClusters,
   useSaveSettings,
   useSettings,
+  useSweepProgress,
   useTestSettings,
 } from '@/lib/queries'
 import { useReadiness, type SetupStep } from '@/lib/readiness'
@@ -285,23 +286,43 @@ const REACH_TONE: Record<Reach, 'ok' | 'warn' | 'bad' | 'unknown'> = {
 function ReachStep() {
   const caps = useAllClusters()
   const refresh = useRefreshClusters()
+  // Watch once a sweep has been asked for, and keep watching if one is
+  // already running when this screen opens.
+  const [watch, setWatch] = useState(false)
+  const sweep = useSweepProgress(watch || refresh.isSuccess)
   const rows = caps.data ?? []
+  const running = sweep.data?.sweeping ?? false
+  const probed = sweep.data?.probed ?? 0
+  const total = sweep.data?.total ?? 0
 
   return (
     <div className="space-y-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
-          {refresh.isPending ? (
+        <Button
+          size="sm"
+          onClick={() => {
+            setWatch(true)
+            refresh.mutate()
+          }}
+          disabled={refresh.isPending || running}
+        >
+          {refresh.isPending || running ? (
             <Loader2 aria-hidden className="size-3.5 animate-spin" />
           ) : (
             <RotateCw aria-hidden className="size-3.5" />
           )}
           {rows.length > 0 ? 'Measure again' : 'Measure now'}
         </Button>
-        {refresh.isPending && (
+        {/* Progress, not a spinner. Each cluster is published the moment it
+            is measured, so there is something true to say the whole time. */}
+        {running && (
           <span className="text-[0.6875rem] text-muted-foreground">
-            Probing each cluster. Unreachable ones take the full 8s to give up.
+            Measured {probed} of {total}. A cluster that cannot be reached takes the full timeout to give up —
+            the rest are already in the list below.
           </span>
+        )}
+        {!running && sweep.data && probed > 0 && (
+          <span className="text-[0.6875rem] text-muted-foreground">All {total} measured.</span>
         )}
       </div>
 
@@ -311,7 +332,7 @@ function ReachStep() {
               timeouts, and the list is truncated. */}
           {[...rows]
             .sort((a, b) => Number(b.investigable ?? false) - Number(a.investigable ?? false))
-            .slice(0, 8)
+            .slice(0, running ? rows.length : 8)
             .map((c) => (
               <li key={c.id} className="flex items-center gap-2 px-2.5 py-1.5">
                 <Chip tone={REACH_TONE[c.reach ?? 'unknown']}>{c.reach ?? 'unknown'}</Chip>
@@ -319,7 +340,7 @@ function ReachStep() {
                 <span className="tabular shrink-0 text-[0.6875rem] text-muted-foreground">{c.latencyMs ?? 0}ms</span>
               </li>
             ))}
-          {rows.length > 8 && (
+          {!running && rows.length > 8 && (
             <li className="px-2.5 py-1.5 text-[0.6875rem] text-muted-foreground">…and {rows.length - 8} more.</li>
           )}
         </ul>

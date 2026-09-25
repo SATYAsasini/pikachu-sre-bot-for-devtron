@@ -11,6 +11,7 @@ export const qk = {
   incident: (id: string) => ['incident', id] as const,
   runAlert: (runId: string) => ['run-alert', runId] as const,
   clusters: ['clusters'] as const,
+  sweep: ['clusters', 'sweep'] as const,
   environments: (clusterId?: number) => ['environments', clusterId ?? 'all'] as const,
   monitoring: (clusterId: number) => ['monitoring', clusterId] as const,
   monitoringProbe: (clusterId: number) => ['monitoring', clusterId, 'probe-all'] as const,
@@ -236,6 +237,33 @@ export function useRefreshClusters() {
       qc.setQueryData([...qk.clusters, 'all'], rows)
       // The picker is the usable subset of this, so it changes too.
       void qc.invalidateQueries({ queryKey: qk.clusters })
+      void qc.invalidateQueries({ queryKey: qk.sweep })
     },
+  })
+}
+
+/**
+ * How far the sweep has got.
+ *
+ * The sweep runs in the background now — probes get a fair timeout and are
+ * deliberately not piled onto the orchestrator, which means a large install
+ * takes a minute or two. Polled while one is running so the list can be
+ * watched filling in, and left alone otherwise.
+ */
+export function useSweepProgress(watch: boolean) {
+  const qc = useQueryClient()
+  return useQuery({
+    queryKey: qk.sweep,
+    queryFn: async () => {
+      const p = await api.sweepProgress()
+      // Each poll is also the moment to pick up whatever has been measured
+      // since the last one.
+      void qc.invalidateQueries({ queryKey: qk.clusters })
+      return p
+    },
+    enabled: watch,
+    refetchInterval: (q) => (q.state.data?.sweeping ? 2000 : false),
+    staleTime: 0,
+    retry: false,
   })
 }

@@ -133,24 +133,34 @@ const maxProbeNamespaces = 3
 // Prober measures what each cluster will serve.
 type Prober struct {
 	c *Client
-	// Timeout bounds one probe. Short on purpose: an unreachable cluster
-	// hangs the orchestrator, and waiting 30s to learn that costs more than
-	// the answer is worth.
-	Timeout time.Duration
-	// Concurrency bounds simultaneous probes so a sweep of 23 clusters does
-	// not become 23 simultaneous hanging requests against the orchestrator.
+	// Timeout bounds one probe.
 	//
-	// Most of a sweep is spent waiting out Timeout on clusters that will
-	// never answer, so this is what sets its wall clock: at 6, twenty-odd
-	// unreachable clusters took four waves and about 25 seconds, which is a
-	// long time to hold a button down for. Twelve halves that and still
-	// keeps a hard ceiling on what is in flight.
+	// It was 8s, which is not long enough. A cluster behind a slow link, or
+	// one the orchestrator has to open a fresh connection to, needs more than
+	// that — and every one it cut short was reported unreachable, which is
+	// the most damaging wrong answer this code can give.
+	Timeout time.Duration
+	// Concurrency bounds simultaneous probes.
+	//
+	// Low on purpose. Raising it to make the sweep finish sooner was a
+	// mistake: the orchestrator proxies every one of these to a different
+	// cluster, and piling requests on it made clusters that answer in 300ms
+	// miss an 8s deadline. A false "unreachable" is worse than a slow sweep,
+	// and results are published as they land now, so the wall clock of the
+	// whole sweep matters much less than it did.
 	Concurrency int
 }
 
+// Probe bounds, overridable through config for installs where the
+// orchestrator is slower or faster than the one these were measured against.
+const (
+	DefaultProbeTimeout     = 20 * time.Second
+	DefaultProbeConcurrency = 4
+)
+
 // NewProber builds a prober with sensible bounds.
 func NewProber(c *Client) *Prober {
-	return &Prober{c: c, Timeout: 8 * time.Second, Concurrency: 12}
+	return &Prober{c: c, Timeout: DefaultProbeTimeout, Concurrency: DefaultProbeConcurrency}
 }
 
 // Probe measures one cluster: can we reach it, and which kinds answer.
@@ -340,7 +350,11 @@ func limitNamespaces(in []string, max int) []string {
 }
 
 // ProbeAll sweeps every cluster, bounded by Concurrency.
-func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster) []Capability {
+//
+// onResult is called with each cluster's verdict the moment it is known, on
+// the goroutine that measured it, so a caller can publish answers while the
+// rest of the sweep is still running. It may be nil.
+func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster, onResult func(Capability)) []Capability {
 	// Where each cluster keeps its workloads, fetched once for the whole
 	// sweep. Only used for the clusters whose cluster-wide read came back
 	// with nothing; a token scoped to environments has no other way to prove
@@ -363,7 +377,11 @@ func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster) []Capability 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			out[i] = p.Probe(ctx, cl.ID, cl.ClusterName, byCluster[cl.ID])
+			c := p.Probe(ctx, cl.ID, cl.ClusterName, byCluster[cl.ID])
+			out[i] = c
+			if onResult != nil {
+				onResult(c)
+			}
 		}(i, cl)
 	}
 	wg.Wait()

@@ -78,6 +78,12 @@ type Config struct {
 		// MaxToolCalls and MaxModelTokens are the agent budget.
 		MaxToolCalls   int `yaml:"maxToolCalls"`
 		MaxModelTokens int `yaml:"maxModelTokens"`
+		// ProbeTimeoutSeconds and ProbeConcurrency bound the cluster
+		// capability sweep. Exposed because the right values depend on how
+		// fast the orchestrator in front of your clusters is, and the cost of
+		// getting them wrong is clusters wrongly reported unreachable.
+		ProbeTimeoutSeconds int `yaml:"probeTimeoutSeconds"`
+		ProbeConcurrency    int `yaml:"probeConcurrency"`
 	} `yaml:"run"`
 
 	Features map[string]bool `yaml:"features"`
@@ -166,6 +172,8 @@ func applyEnv(c *Config) {
 	setInt(&c.Run.TimeoutSeconds, "SRE_RUN_TIMEOUT_SECONDS")
 	setInt(&c.Run.MaxToolCalls, "SRE_RUN_MAX_TOOL_CALLS")
 	setInt(&c.Run.MaxModelTokens, "SRE_RUN_MAX_MODEL_TOKENS")
+	setInt(&c.Run.ProbeTimeoutSeconds, "SRE_RUN_PROBE_TIMEOUT_SECONDS")
+	setInt(&c.Run.ProbeConcurrency, "SRE_RUN_PROBE_CONCURRENCY")
 
 	// SRE_FEATURE_<NAME>=true enables a feature flag.
 	for _, kv := range os.Environ() {

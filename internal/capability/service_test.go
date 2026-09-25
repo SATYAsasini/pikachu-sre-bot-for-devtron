@@ -344,3 +344,119 @@ func TestHydrateMerges(t *testing.T) {
 		t.Errorf("hydrate should restore what was stored: %+v", s.All())
 	}
 }
+
+// A sweep of a large install runs for a minute or more. Holding every answer
+// back until the last cluster has timed out is what made it look hung.
+func TestResultsArePublishedAsTheyLand(t *testing.T) {
+	t.Parallel()
+
+	s, _, _ := newTestService(t, fakeOpts{
+		Clusters:   fxClusters(2, 2),
+		Usable:     map[int]bool{1: true, 2: true},
+		ProbeDelay: 120 * time.Millisecond,
+	})
+	// One at a time, so "some are done and some are not" is a real state.
+	s.prober.Concurrency = 1
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := s.Refresh(t.Context()); err != nil {
+			t.Errorf("refresh: %v", err)
+		}
+	}()
+
+	if !awaitSweep(s, 2*time.Second) {
+		t.Fatal("the sweep never started")
+	}
+
+	// Somewhere in the middle, the service must already know something.
+	deadline := time.Now().Add(4 * time.Second)
+	sawPartial := false
+	for time.Now().Before(deadline) {
+		p := s.Progress()
+		if p.Sweeping && p.Probed > 0 && p.Probed < p.Total {
+			if len(s.All()) < p.Probed {
+				t.Fatalf("progress says %d measured but only %d published", p.Probed, len(s.All()))
+			}
+			sawPartial = true
+			break
+		}
+		if !p.Sweeping {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	<-done
+
+	if !sawPartial {
+		t.Error("never observed a partially finished sweep publishing results")
+	}
+	if p := s.Progress(); p.Sweeping || p.Probed != 4 || p.Total != 4 {
+		t.Errorf("after the sweep: %+v", p)
+	}
+}
+
+func TestProgressIsZeroBeforeAnySweep(t *testing.T) {
+	t.Parallel()
+
+	s, _, _ := newTestService(t, fakeOpts{Clusters: fxClusters(1, 0), Usable: map[int]bool{1: true}})
+	p := s.Progress()
+	if p.Sweeping || p.Probed != 0 || p.Total != 0 {
+		t.Errorf("want an idle zero progress, got %+v", p)
+	}
+	if !p.Started.IsZero() {
+		t.Errorf("nothing has started, got %v", p.Started)
+	}
+}
+
+// Clusters that worked last time are measured first, so the picker fills with
+// answers rather than with a queue of timeouts.
+func TestSweepOrdersKnownGoodClustersFirst(t *testing.T) {
+	t.Parallel()
+
+	s, _, store := newTestService(t, fakeOpts{
+		Clusters: fxClusters(1, 2),
+		Usable:   map[int]bool{1: true},
+	})
+	store.saved = []devtron.Capability{
+		{ClusterID: 101, ClusterName: "dead-a", Reach: devtron.ReachUnreachable, ProbedAt: time.Now()},
+		{ClusterID: 1, ClusterName: "live-a", Reach: devtron.ReachUsable, ProbedAt: time.Now()},
+		{ClusterID: 102, ClusterName: "dead-b", Reach: devtron.ReachError, ProbedAt: time.Now()},
+	}
+	s.Hydrate(t.Context())
+
+	if got := s.probeRank(1); got != 0 {
+		t.Errorf("a cluster that worked should sort first, got rank %d", got)
+	}
+	if got := s.probeRank(101); got != 5 {
+		t.Errorf("an unreachable cluster should sort last, got rank %d", got)
+	}
+	if got := s.probeRank(102); got != 4 {
+		t.Errorf("an errored cluster ranks above an unreachable one, got %d", got)
+	}
+	// Never measured sits between: worth an early look, but not ahead of a
+	// cluster already known to work.
+	if got := s.probeRank(999); got <= 0 || got >= 4 {
+		t.Errorf("an unmeasured cluster should sort early but not first, got %d", got)
+	}
+}
+
+func TestTuneOverridesProbeBounds(t *testing.T) {
+	t.Parallel()
+
+	s, _, _ := newTestService(t, fakeOpts{Clusters: fxClusters(1, 0), Usable: map[int]bool{1: true}})
+	before := s.prober.Timeout
+
+	// Zero and negative values are "not configured" and must change nothing.
+	s.Tune(0, 0)
+	s.Tune(-1, -1)
+	if s.prober.Timeout != before {
+		t.Errorf("an unset config changed the timeout to %v", s.prober.Timeout)
+	}
+
+	s.Tune(45*time.Second, 7)
+	if s.prober.Timeout != 45*time.Second || s.prober.Concurrency != 7 {
+		t.Errorf("tune did not apply: %v / %d", s.prober.Timeout, s.prober.Concurrency)
+	}
+}

@@ -70,6 +70,14 @@ export interface Cluster {
   monitoringPinned?: boolean
 }
 
+/** How far the cluster capability sweep has got. */
+export interface SweepProgress {
+  sweeping: boolean
+  probed: number
+  total: number
+  startedAt?: string
+}
+
 export interface Environment {
   environmentId: number
   environmentName: string

@@ -66,6 +66,10 @@ func (s *Server) Handler() http.Handler {
 		// about how many clusters were usable.
 		r.Get("/clusters", s.listClusters)
 		r.Post("/clusters/refresh", s.refreshClusters)
+		// How far the sweep has got. It runs for a minute or more on a large
+		// install, and a caller that cannot see progress cannot tell it apart
+		// from a hang.
+		r.Get("/clusters/sweep", s.sweepProgress)
 		r.Get("/clusters/{clusterId}/environments", s.listClusterEnvironments)
 		r.Get("/clusters/{clusterId}/monitoring", s.clusterMonitoring)
 		// Discovery picks by heuristic, and on a cluster running both vmalert
@@ -213,12 +217,20 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 // refreshClusters re-measures every cluster and returns the same rows as
 // listClusters, so a caller that refreshes can drop the response straight into
 // the cache it already had.
+// refreshClusters starts a sweep and returns what is known now.
+//
+// It used to block until every cluster had been measured. That was tolerable
+// when a probe gave up after 8 seconds and a dozen ran at once; it is not now
+// that probes are given a fair timeout and are deliberately not piled onto
+// the orchestrator. Each cluster is published the moment it is measured, so
+// the caller polls /clusters/sweep and re-reads the list as it fills.
 func (s *Server) refreshClusters(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.Caps.Refresh(r.Context()); err != nil {
-		writeDevtronError(w, err)
-		return
-	}
+	s.Caps.RefreshInBackground(r.Context())
 	s.writeClusterRows(w, r)
+}
+
+func (s *Server) sweepProgress(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.Caps.Progress())
 }
 
 func (s *Server) listClusterEnvironments(w http.ResponseWriter, r *http.Request) {

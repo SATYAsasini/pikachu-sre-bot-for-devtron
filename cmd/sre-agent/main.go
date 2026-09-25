@@ -113,6 +113,7 @@ func run() error {
 	}
 
 	caps := capability.New(dc, store, logger, runs.StaleBefore)
+	caps.Tune(time.Duration(cfg.Run.ProbeTimeoutSeconds)*time.Second, cfg.Run.ProbeConcurrency)
 	caps.Hydrate(ctx)
 	if dc.HasToken() {
 		// Measure in the background so the first page view is not blocked by

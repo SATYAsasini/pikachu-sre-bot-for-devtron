@@ -18,6 +18,7 @@ import type {
   KnowledgeComponent,
   MonitoringPick,
   MonitoringStack,
+  SweepProgress,
   ProbeResult,
   Run,
   RunEvent,
@@ -246,6 +247,9 @@ export const api = {
     request<{ ok: boolean; error?: string }>('/rules/notify/test', { method: 'POST', json: body }),
 
   /** Re-measures every cluster and returns the same rows as `clusters`. */
+  sweepProgress: (): Promise<SweepProgress> => request<SweepProgress>('/clusters/sweep'),
+
+  /** Starts a sweep and returns what is known now; the rest lands as it is measured. */
   refreshClusters: async (): Promise<Cluster[]> =>
     isFixtureMode()
       ? fixtures.clusters()

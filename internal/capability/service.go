@@ -53,6 +53,33 @@ type Service struct {
 	// inflight lets callers see that a sweep is already on its way without
 	// blocking on it.
 	inflight atomic.Bool
+	// Progress counters, so a sweep that now takes a minute or two can be
+	// watched filling in rather than waited out behind a spinner.
+	probed    atomic.Int64
+	total     atomic.Int64
+	startedAt atomic.Int64 // unix nanos
+}
+
+// Progress is what a sweep looks like from outside while it runs.
+type Progress struct {
+	Sweeping bool      `json:"sweeping"`
+	Probed   int       `json:"probed"`
+	Total    int       `json:"total"`
+	Started  time.Time `json:"startedAt,omitzero"`
+}
+
+// Progress reports how far the current sweep has got. Safe to call at any
+// time; between sweeps it reports the last one's totals.
+func (s *Service) Progress() Progress {
+	p := Progress{
+		Sweeping: s.inflight.Load(),
+		Probed:   int(s.probed.Load()),
+		Total:    int(s.total.Load()),
+	}
+	if n := s.startedAt.Load(); n > 0 {
+		p.Started = time.Unix(0, n)
+	}
+	return p
 }
 
 // New builds a service.
@@ -63,6 +90,17 @@ func New(dc *devtron.Client, store Store, log *slog.Logger, ttl time.Duration) *
 	return &Service{
 		dc: dc, prober: devtron.NewProber(dc), store: store, log: log, ttl: ttl,
 		byID: map[int]devtron.Capability{},
+	}
+}
+
+// Tune overrides the probe bounds. Zero or negative values keep the defaults,
+// so an unset config changes nothing.
+func (s *Service) Tune(timeout time.Duration, concurrency int) {
+	if timeout > 0 {
+		s.prober.Timeout = timeout
+	}
+	if concurrency > 0 {
+		s.prober.Concurrency = concurrency
 	}
 }
 
@@ -193,8 +231,27 @@ func (s *Service) sweep(ctx context.Context) ([]devtron.Capability, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Most likely to be useful first, so the picker fills with answers rather
+	// than with a queue of timeouts.
+	sort.SliceStable(clusters, func(i, j int) bool {
+		return s.probeRank(clusters[i].ID) < s.probeRank(clusters[j].ID)
+	})
+
 	started := time.Now()
-	caps := s.prober.ProbeAll(ctx, clusters)
+	s.total.Store(int64(len(clusters)))
+	s.probed.Store(0)
+	s.startedAt.Store(started.UnixNano())
+
+	// Published as they land. A sweep of a large install takes long enough
+	// that holding every answer back until the last cluster has timed out
+	// makes the whole thing look hung.
+	caps := s.prober.ProbeAll(ctx, clusters, func(c devtron.Capability) {
+		s.putOne(c)
+		s.probed.Add(1)
+	})
+
+	// And replaced at the end, which is what prunes the clusters Devtron no
+	// longer lists. Incremental publishing can only ever add.
 	s.replace(caps)
 	if err := s.store.SaveCapabilities(ctx, caps); err != nil {
 		s.log.Warn("could not persist cluster capabilities", "err", err)
@@ -259,6 +316,37 @@ func (s *Service) replace(caps []devtron.Capability) {
 	s.mu.Lock()
 	s.byID = next
 	s.mu.Unlock()
+}
+
+// putOne publishes a single cluster's verdict mid-sweep.
+func (s *Service) putOne(c devtron.Capability) {
+	s.mu.Lock()
+	s.byID[c.ClusterID] = c
+	s.mu.Unlock()
+}
+
+// probeRank orders a sweep by what the last one found: clusters that worked
+// before are measured first, clusters that could not be reached last.
+func (s *Service) probeRank(clusterID int) int {
+	s.mu.RLock()
+	c, ok := s.byID[clusterID]
+	s.mu.RUnlock()
+	if !ok {
+		return 1 // never measured: worth an early look
+	}
+	switch c.Reach {
+	case devtron.ReachUsable:
+		return 0
+	case devtron.ReachEmpty:
+		return 2
+	case devtron.ReachForbidden:
+		return 3
+	case devtron.ReachError:
+		return 4
+	case devtron.ReachUnreachable:
+		return 5
+	}
+	return 1
 }
 
 // put merges, which is what restoring from the store wants.

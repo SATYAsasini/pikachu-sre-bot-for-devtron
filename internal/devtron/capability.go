@@ -121,7 +121,14 @@ func (c *Capability) Summary() string {
 
 // probeKinds are the kinds the agent actually reaches for, so they are the
 // only ones worth the round trip.
+//
+// All of them decide reach, not just the first. A cluster with no pods but
+// plenty of nodes is alive, and judging it on Pod alone reported it empty.
 var probeKinds = []GVK{GVKPod, GVKEvent, GVKService, GVKDeployment, GVKNode}
+
+// maxProbeNamespaces caps the namespace fallback. A cluster with forty
+// environments is not worth forty extra rounds to establish one fact.
+const maxProbeNamespaces = 3
 
 // Prober measures what each cluster will serve.
 type Prober struct {
@@ -147,60 +154,206 @@ func NewProber(c *Client) *Prober {
 }
 
 // Probe measures one cluster: can we reach it, and which kinds answer.
-func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string) Capability {
+//
+// Every kind is asked at once and the verdict comes from all of them
+// together. It used to hinge on a single cluster-wide Pod list, which
+// answered two very different questions with the same empty array: "this
+// cluster has nothing running" and "this token may not list across all
+// namespaces". Clusters in the second case were reported empty and hidden
+// from the picker.
+//
+// namespaces are the ones Devtron says this cluster has, used only when the
+// cluster-wide read came back with nothing at all.
+func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, namespaces []string) Capability {
 	measured := Capability{ClusterID: clusterID, ClusterName: clusterName, ProbedAt: time.Now().UTC()}
 	started := time.Now()
 
-	reachCtx, cancel := context.WithTimeout(ctx, p.Timeout)
-	defer cancel()
-	list, err := p.c.ListResources(reachCtx, ResourceQuery{ClusterID: clusterID, GVK: GVKPod})
+	// One cheap question first. Most clusters on a large install cannot be
+	// reached at all, and they say so on the first call — spending five on
+	// each of them tripled the sweep and put enough load on the orchestrator
+	// to make healthy clusters time out.
+	first := p.probeKind(ctx, clusterID, GVKPod, "")
 	measured.LatencyMs = time.Since(started).Milliseconds()
-
-	switch {
-	case err == nil && list.Len() > 0:
-		measured.Reach = ReachUsable
-	case err == nil:
-		measured.Reach = ReachEmpty
-	default:
-		measured.Reach, measured.Detail = classifyProbeError(reachCtx, err)
+	if first.reach == ReachUnreachable || first.reach == ReachError {
+		measured.Kinds = []KindAccess{first.access}
+		measured.Reach, measured.Detail = reachFrom([]kindProbe{first})
 		return measured
 	}
 
-	// Reachable: find out which kinds this token can actually read. These run
-	// together because they are independent and the cluster has just proven
-	// it answers quickly.
-	measured.Kinds = p.probeKinds(ctx, clusterID)
+	// It answered something — even a refusal is an answer. Now ask the rest,
+	// because one kind cannot tell "nothing is running" from "this token
+	// cannot list across all namespaces", and being denied Pods says nothing
+	// about Services or Nodes.
+	probes := p.probeRest(ctx, clusterID, "", first)
+	measured.Kinds = accessOf(probes)
+	measured.Reach, measured.Detail = reachFrom(probes)
+
+	// Nothing came back, but the cluster answered. Before calling it empty,
+	// look where Devtron says this cluster actually has workloads: a token
+	// scoped to environments rather than to whole clusters reads nothing
+	// across all namespaces and plenty inside one.
+	if measured.Reach == ReachEmpty {
+		for _, ns := range limitNamespaces(namespaces, maxProbeNamespaces) {
+			scoped := p.probeKinds(ctx, clusterID, ns)
+			if r, _ := reachFrom(scoped); r == ReachUsable {
+				measured.Kinds = accessOf(scoped)
+				measured.Reach = ReachUsable
+				measured.Detail = "readable in namespace " + ns + ", not across all namespaces"
+				break
+			}
+		}
+	}
 	return measured
 }
 
-func (p *Prober) probeKinds(ctx context.Context, clusterID int) []KindAccess {
-	out := make([]KindAccess, len(probeKinds))
+// kindProbe is one kind's result, with the classification kept beside it so
+// the verdict does not have to be re-derived by parsing a message.
+type kindProbe struct {
+	access KindAccess
+	reach  Reach
+}
+
+// probeKind asks one kind, in one namespace ("" for every namespace).
+func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespace string) kindProbe {
+	kctx, cancel := context.WithTimeout(ctx, p.Timeout)
+	defer cancel()
+
+	list, err := p.c.ListResources(kctx, ResourceQuery{
+		ClusterID: clusterID, GVK: gvk, Namespace: namespace,
+	})
+	access := KindAccess{Kind: gvk.Kind}
+	if err != nil {
+		reach, detail := classifyProbeError(kctx, err)
+		access.Allowed = false
+		access.Detail = string(reach) + ": " + detail
+		return kindProbe{access: access, reach: reach}
+	}
+	access.Allowed = true
+	access.Count = list.Len()
+	return kindProbe{access: access, reach: ReachUsable}
+}
+
+// probeRest asks every kind except the one already measured, keeping the
+// declared order so a sweep is reproducible.
+func (p *Prober) probeRest(ctx context.Context, clusterID int, namespace string, done kindProbe) []kindProbe {
+	out := make([]kindProbe, len(probeKinds))
 	var wg sync.WaitGroup
 	for i, gvk := range probeKinds {
+		if gvk.Kind == done.access.Kind {
+			out[i] = done
+			continue
+		}
 		wg.Add(1)
 		go func(i int, gvk GVK) {
 			defer wg.Done()
-			kctx, cancel := context.WithTimeout(ctx, p.Timeout)
-			defer cancel()
-			list, err := p.c.ListResources(kctx, ResourceQuery{ClusterID: clusterID, GVK: gvk})
-			access := KindAccess{Kind: gvk.Kind}
-			if err != nil {
-				reach, detail := classifyProbeError(kctx, err)
-				access.Allowed = false
-				access.Detail = string(reach) + ": " + detail
-			} else {
-				access.Allowed = true
-				access.Count = list.Len()
-			}
-			out[i] = access
+			out[i] = p.probeKind(ctx, clusterID, gvk, namespace)
 		}(i, gvk)
 	}
 	wg.Wait()
 	return out
 }
 
+func (p *Prober) probeKinds(ctx context.Context, clusterID int, namespace string) []kindProbe {
+	out := make([]kindProbe, len(probeKinds))
+	var wg sync.WaitGroup
+	for i, gvk := range probeKinds {
+		wg.Add(1)
+		go func(i int, gvk GVK) {
+			defer wg.Done()
+			out[i] = p.probeKind(ctx, clusterID, gvk, namespace)
+		}(i, gvk)
+	}
+	wg.Wait()
+	return out
+}
+
+func accessOf(probes []kindProbe) []KindAccess {
+	out := make([]KindAccess, 0, len(probes))
+	for _, k := range probes {
+		out = append(out, k.access)
+	}
+	return out
+}
+
+// reachFrom turns per-kind results into one verdict.
+//
+// Anything returning objects settles it: the cluster is readable, whatever
+// the other kinds did. Empty is only reported when every kind answered and
+// every one of them was empty — a single kind's silence is not evidence that
+// a cluster is idle.
+func reachFrom(probes []kindProbe) (Reach, string) {
+	var answered, objects, forbidden, timedOut, errored int
+	var firstErr string
+	for _, k := range probes {
+		if k.access.Allowed {
+			answered++
+			objects += k.access.Count
+			continue
+		}
+		if firstErr == "" {
+			firstErr = k.access.Detail
+		}
+		switch k.reach {
+		case ReachForbidden:
+			forbidden++
+		case ReachUnreachable:
+			timedOut++
+		default:
+			errored++
+		}
+	}
+
+	switch {
+	case objects > 0:
+		return ReachUsable, ""
+	case answered > 0:
+		// Every kind that answered came back with nothing. Genuinely idle, or
+		// filtered down to nothing — indistinguishable from here, which is
+		// what ReachEmpty means.
+		return ReachEmpty, ""
+	case forbidden >= timedOut && forbidden >= errored && forbidden > 0:
+		return ReachForbidden, firstErr
+	case timedOut >= errored && timedOut > 0:
+		return ReachUnreachable, "timed out; the orchestrator could not reach the cluster"
+	case errored > 0:
+		return ReachError, firstErr
+	}
+	return ReachUnknown, "nothing was probed"
+}
+
+// limitNamespaces deduplicates and caps the fallback list, keeping order so a
+// sweep is reproducible.
+func limitNamespaces(in []string, max int) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, max)
+	for _, n := range in {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+		if len(out) == max {
+			break
+		}
+	}
+	return out
+}
+
 // ProbeAll sweeps every cluster, bounded by Concurrency.
 func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster) []Capability {
+	// Where each cluster keeps its workloads, fetched once for the whole
+	// sweep. Only used for the clusters whose cluster-wide read came back
+	// with nothing; a token scoped to environments has no other way to prove
+	// it can read anything at all.
+	byCluster := map[int][]string{}
+	if envs, err := p.c.Environments(ctx); err == nil {
+		for _, e := range envs {
+			if e.Namespace != "" {
+				byCluster[e.ClusterID] = append(byCluster[e.ClusterID], e.Namespace)
+			}
+		}
+	}
+
 	out := make([]Capability, len(clusters))
 	sem := make(chan struct{}, max(1, p.Concurrency))
 	var wg sync.WaitGroup
@@ -210,7 +363,7 @@ func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster) []Capability 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			out[i] = p.Probe(ctx, cl.ID, cl.ClusterName)
+			out[i] = p.Probe(ctx, cl.ID, cl.ClusterName, byCluster[cl.ID])
 		}(i, cl)
 	}
 	wg.Wait()

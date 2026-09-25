@@ -3,6 +3,7 @@ package devtron
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,6 +163,14 @@ type fakeOpts struct {
 	// NeedsPort, when set for a service, makes the portless target fail so
 	// the port fallback is what has to work.
 	NeedsPort map[string]bool
+	// ListKinds is how many objects each Kubernetes kind returns when listed
+	// across all namespaces, for the capability probe. A kind that is absent
+	// returns none; a nil map means kind-aware listing is off and Objects is
+	// served instead, which is what the discovery tests want.
+	ListKinds map[string]int
+	// NamespacePods is how many pods a named namespace returns, for the
+	// scoped-token case where the all-namespace list reads nothing.
+	NamespacePods map[string]int
 	// ListErr makes the resource list itself fail.
 	ListErr bool
 	// ListDelay stalls the resource list.
@@ -187,6 +196,24 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 			http.Error(w, `{"errors":[{"userMessage":"cluster unreachable"}]}`, http.StatusBadGateway)
 			return
 		}
+
+		// The capability probe asks for a specific kind, optionally inside a
+		// namespace. Discovery asks with a CEL filter and no kind, and wants
+		// Objects.
+		if o.ListKinds != nil {
+			kind, ns := listTarget(r)
+			n := o.ListKinds[kind]
+			if ns != "" {
+				// A namespaced read only finds what that namespace holds.
+				n = 0
+				if kind == "Pod" {
+					n = o.NamespacePods[ns]
+				}
+			}
+			writeEnvelope(w, objectsOfKind(kind, n))
+			return
+		}
+
 		objs := o.Objects
 		if objs == nil {
 			objs = []map[string]any{}
@@ -237,6 +264,44 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 }
 
 func (f *fakeDevtron) Close() { f.srv.Close() }
+
+// listTarget pulls the kind and namespace back out of a resource-list body.
+func listTarget(r *http.Request) (kind, namespace string) {
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var req struct {
+		K8sRequest struct {
+			ResourceIdentifier struct {
+				Namespace        string `json:"namespace"`
+				GroupVersionKind struct {
+					Kind string `json:"Kind"`
+				} `json:"groupVersionKind"`
+			} `json:"resourceIdentifier"`
+		} `json:"k8sRequest"`
+	}
+	_ = json.Unmarshal(body, &req)
+	return req.K8sRequest.ResourceIdentifier.GroupVersionKind.Kind,
+		req.K8sRequest.ResourceIdentifier.Namespace
+}
+
+// objectsOfKind builds n listable objects, because a slice of nil maps
+// marshals to [null, null, …] and is rightly counted as nothing.
+func objectsOfKind(kind string, n int) []map[string]any {
+	out := make([]map[string]any, 0, n)
+	for i := range n {
+		out = append(out, map[string]any{
+			"apiVersion": "v1",
+			"kind":       kind,
+			"metadata":   map[string]any{"namespace": "devtroncd", "name": fmt.Sprintf("%s-%d", kind, i)},
+		})
+	}
+	return out
+}
+
+func writeEnvelope(w http.ResponseWriter, result any) {
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(map[string]any{"code": 200, "status": "OK", "result": result})
+	_, _ = w.Write(body)
+}
 
 func (f *fakeDevtron) probed(ns, name string) int {
 	f.mu.Lock()

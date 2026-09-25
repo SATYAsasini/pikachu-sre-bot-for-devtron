@@ -178,8 +178,26 @@ func (s *Store) Append(ctx context.Context, runID, typ, agent string, payload an
 }
 
 // appendTx allocates the next sequence inside a transaction. Sequence numbers
-// must be gapless per run because findings cite them.
+// must be gapless per run because findings cite them as [ev:N], which rules
+// out a Postgres sequence: those leave holes whenever a transaction rolls
+// back.
+//
+// So the number is read and written in one statement — and that is a
+// lost-update waiting to happen. Under READ COMMITTED two concurrent appends
+// for the same run both see the same max(seq), both insert it, and the
+// second dies on the primary key with SQLSTATE 23505. That is not a rare
+// race: the model calls tools in parallel by default, so it fires the first
+// time an agent asks two questions in one turn, and the tool whose ledger
+// entry lost never runs at all.
+//
+// An advisory lock keyed on the run serialises allocation for that run only,
+// is released with the transaction, and touches nothing else — in
+// particular not the runs row, which the worker updates on its own schedule.
 func appendTx(ctx context.Context, tx pgx.Tx, runID, typ, agent string, payload any) (int, time.Time, error) {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, runID); err != nil {
+		return 0, time.Time{}, fmt.Errorf("lock ledger for %s: %w", typ, err)
+	}
+
 	var (
 		seq int
 		at  time.Time

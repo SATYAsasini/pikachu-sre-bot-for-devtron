@@ -16,6 +16,7 @@ import type {
   RulePreview,
   RulesConfig,
   KnowledgeComponent,
+  ClusterAccess,
   MonitoringPick,
   MonitoringStack,
   SweepProgress,
@@ -248,6 +249,12 @@ export const api = {
 
   /** Re-measures every cluster and returns the same rows as `clusters`. */
   sweepProgress: (): Promise<SweepProgress> => request<SweepProgress>('/clusters/sweep'),
+
+  /** What the token can read inside one cluster, optionally in one namespace. */
+  clusterAccess: (clusterId: number, namespace?: string): Promise<ClusterAccess> =>
+    request<ClusterAccess>(`/clusters/${clusterId}/access`, {
+      params: namespace ? { namespace } : {},
+    }),
 
   /** Measure one cluster now, ignoring Devtron's own verdict on it. */
   probeCluster: (clusterId: number): Promise<Cluster> =>

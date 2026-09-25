@@ -72,6 +72,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/clusters/sweep", s.sweepProgress)
 		// Measure one cluster now, ignoring Devtron's own verdict on it.
 		r.Post("/clusters/{clusterId}/probe", s.probeCluster)
+		// What the token can read inside one cluster. The deep question,
+		// asked only for the cluster somebody opened.
+		r.Get("/clusters/{clusterId}/access", s.clusterAccess)
 		r.Get("/clusters/{clusterId}/environments", s.listClusterEnvironments)
 		r.Get("/clusters/{clusterId}/monitoring", s.clusterMonitoring)
 		// Discovery picks by heuristic, and on a cluster running both vmalert
@@ -236,6 +239,25 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refreshClusters(w http.ResponseWriter, r *http.Request) {
 	s.Caps.RefreshInBackground(r.Context())
 	s.writeClusterRows(w, r)
+}
+
+// clusterAccess answers "what is in this cluster and what may be read".
+//
+// Separate from the reach check on purpose. Reach has to be cheap enough to
+// run across every cluster; this costs five reads and only ever runs for the
+// one cluster somebody is looking at.
+func (s *Server) clusterAccess(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "clusterId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cluster_id", err.Error())
+		return
+	}
+	access, err := s.Caps.Access(r.Context(), id, r.URL.Query().Get("namespace"))
+	if err != nil {
+		writeDevtronError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, access)
 }
 
 // probeCluster measures one cluster on demand.

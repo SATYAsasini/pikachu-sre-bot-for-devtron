@@ -309,6 +309,53 @@ func (s *Service) ProbeOne(ctx context.Context, clusterID int) (devtron.Capabili
 	return devtron.Capability{}, fmt.Errorf("devtron does not list a cluster with id %d", clusterID)
 }
 
+// Access is what this token can do inside one cluster.
+//
+// The reach check answers "may we look at all"; this answers "what is here
+// and what may be read". They are deliberately separate calls: the first has
+// to be cheap enough to run across every cluster, the second only ever runs
+// for the one cluster somebody opened.
+type Access struct {
+	ClusterID int `json:"clusterId"`
+	// Namespaces is what the reach check saw, or what Devtron maps to this
+	// cluster when the token cannot list them.
+	Namespaces []string `json:"namespaces"`
+	// Namespace is where Kinds was measured. Empty means across the cluster.
+	Namespace string `json:"namespace,omitempty"`
+	// Kinds is what the token may read there, measured now.
+	Kinds []devtron.KindAccess `json:"kinds"`
+	// Reach is the cluster's standing verdict, so the page can say why it is
+	// showing nothing rather than showing an empty table.
+	Reach devtron.Reach `json:"reach"`
+}
+
+// Access measures what the token can read in one cluster, optionally inside
+// one namespace.
+func (s *Service) Access(ctx context.Context, clusterID int, namespace string) (Access, error) {
+	out := Access{ClusterID: clusterID, Namespace: namespace, Reach: devtron.ReachUnknown}
+
+	if measured := s.Get(clusterID); measured != nil {
+		out.Namespaces = measured.Namespaces
+		out.Reach = measured.Reach
+	}
+	// Nothing recorded, or nothing visible: fall back to the namespaces
+	// Devtron maps to this cluster, which is what a scoped token has.
+	if len(out.Namespaces) == 0 {
+		if envs, err := s.dc.EnvironmentsInCluster(ctx, clusterID); err == nil {
+			seen := map[string]bool{}
+			for _, e := range envs {
+				if e.Namespace != "" && !seen[e.Namespace] {
+					seen[e.Namespace] = true
+					out.Namespaces = append(out.Namespaces, e.Namespace)
+				}
+			}
+		}
+	}
+
+	out.Kinds = s.prober.Kinds(ctx, clusterID, namespace)
+	return out, nil
+}
+
 // RefreshInBackground sweeps without blocking a request, and does nothing
 // when a sweep is already under way.
 func (s *Service) RefreshInBackground(ctx context.Context) {

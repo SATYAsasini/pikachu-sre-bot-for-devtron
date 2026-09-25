@@ -74,6 +74,24 @@ export interface Cluster {
   fromDevtron?: boolean
 }
 
+/** One Kubernetes kind, and whether this token may read it. */
+export interface KindAccess {
+  kind: string
+  allowed: boolean
+  count: number
+  detail?: string
+}
+
+/** What the token can do inside one cluster. */
+export interface ClusterAccess {
+  clusterId: number
+  namespaces: string[] | null
+  /** Where the kinds were measured. Absent means across the cluster. */
+  namespace?: string
+  kinds: KindAccess[] | null
+  reach: Reach
+}
+
 /** How far the cluster capability sweep has got. */
 export interface SweepProgress {
   sweeping: boolean

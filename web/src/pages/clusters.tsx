@@ -16,6 +16,7 @@ import { qk, useClusters } from '@/lib/queries'
 import { useScope } from '@/lib/scope'
 import { alertMeta } from '@/lib/alert-meta'
 import { MonitoringPicker } from '@/components/scope/monitoring-picker'
+import { ClusterAccess } from '@/components/scope/cluster-access'
 import type { Cluster, Priority, RulesConfig } from '@/lib/types'
 
 const PRIORITY_TONE: Record<Priority, Tone> = { P0: 'bad', P1: 'warn', P2: 'neutral' }
@@ -66,7 +67,7 @@ function safe(cfg: RulesConfig | undefined, clusterId: number): RulesConfig {
  * The preview updates as you type, before anything is saved. Saving is a
  * separate, deliberate act.
  */
-type Tab = 'rules' | 'notifications' | 'monitoring'
+type Tab = 'rules' | 'notifications' | 'monitoring' | 'access'
 
 /**
  * Per-cluster configuration, one cluster at a time.
@@ -159,6 +160,7 @@ export function ClustersPage() {
             ['rules', 'Alert rules'],
             ['notifications', 'Notifications'],
             ['monitoring', 'Monitoring'],
+            ['access', 'Access'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -181,6 +183,8 @@ export function ClustersPage() {
 
       {!ready ? null : tab === 'monitoring' ? (
         <MonitoringPicker key={clusterId} clusterId={clusterId} clusterName={clusterName} />
+      ) : tab === 'access' ? (
+        <ClusterAccess key={clusterId} clusterId={clusterId} clusterName={clusterName} />
       ) : (
         <ClusterConfig key={clusterId} clusterId={clusterId} clusterName={clusterName} tab={tab} />
       )}
@@ -219,7 +223,7 @@ function ClusterConfig({
 }: {
   clusterId: number
   clusterName?: string
-  tab: Exclude<Tab, 'monitoring'>
+  tab: Exclude<Tab, 'monitoring' | 'access'>
 }) {
 
   const saved = useQuery({

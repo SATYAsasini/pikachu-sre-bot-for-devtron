@@ -12,6 +12,8 @@ export const qk = {
   runAlert: (runId: string) => ['run-alert', runId] as const,
   clusters: ['clusters'] as const,
   sweep: ['clusters', 'sweep'] as const,
+  clusterAccess: (clusterId: number, namespace?: string) =>
+    ['cluster-access', clusterId, namespace ?? ''] as const,
   environments: (clusterId?: number) => ['environments', clusterId ?? 'all'] as const,
   monitoring: (clusterId: number) => ['monitoring', clusterId] as const,
   monitoringProbe: (clusterId: number) => ['monitoring', clusterId, 'probe-all'] as const,
@@ -239,6 +241,22 @@ export function useRefreshClusters() {
       void qc.invalidateQueries({ queryKey: qk.clusters })
       void qc.invalidateQueries({ queryKey: qk.sweep })
     },
+  })
+}
+
+/**
+ * What the token can read inside one cluster.
+ *
+ * Only ever fetched for the cluster somebody opened — it costs five reads,
+ * which is exactly why it is not part of the reach check any more.
+ */
+export function useClusterAccess(clusterId?: number, namespace?: string) {
+  return useQuery({
+    queryKey: qk.clusterAccess(clusterId ?? -1, namespace),
+    queryFn: () => api.clusterAccess(clusterId as number, namespace),
+    enabled: clusterId !== undefined,
+    staleTime: 60_000,
+    retry: false,
   })
 }
 

@@ -815,3 +815,110 @@ func TestPortsForPrefersWhatTheObjectDeclared(t *testing.T) {
 		t.Errorf("an unrecognised flavor has no defaults to offer, got %v", got)
 	}
 }
+
+// A stored stack is authoritative until somebody asks for a new measurement.
+//
+// It used to expire after fifteen minutes, which made the answer to "what
+// monitoring does this cluster run" depend on when you asked. A list built
+// from fifty of those never settles, and filtering alerts by cluster needs
+// it to.
+func TestAStoredStackDoesNotExpireOnItsOwn(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Objects: fxNoPorts(),
+		OK:      map[string]string{probeKey("monitoring", "prometheus-server"): fxPromOK()},
+	})
+	defer f.Close()
+
+	// A window so short that anything time-based would have expired.
+	d := NewDiscoverer(c, time.Nanosecond)
+	if _, err := d.Get(t.Context(), 1, "c"); err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	for range 3 {
+		if _, err := d.Get(t.Context(), 1, "c"); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+	}
+	if n := f.lists(); n != 1 {
+		t.Errorf("a stored stack was re-derived %d times", n)
+	}
+	// It still reports itself old, so a caller can offer a re-probe — it
+	// just never causes one.
+	if !d.Stale(1) {
+		t.Error("Stale should say so; it must simply not act on it")
+	}
+	// And an explicit re-measure is what actually refreshes it.
+	if _, err := d.Probe(t.Context(), 1, "c"); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if n := f.lists(); n != 2 {
+		t.Errorf("an explicit probe must re-measure, got %d lists", n)
+	}
+}
+
+// Hydration is what makes the first alert list after a restart cheap.
+func TestHydrateRestoresWithoutProbing(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{Objects: fxNoPorts()})
+	defer f.Close()
+
+	d := NewDiscoverer(c, time.Minute)
+	restored := &MonitoringStack{
+		ClusterID: 7, ClusterName: "restored", DiscoveredAt: time.Now().Add(-48 * time.Hour),
+		Metrics: &Endpoint{Flavor: FlavorVictoriaMetrics, Reachable: true,
+			Service: ServiceRef{Namespace: "monitoring", Name: "vmsingle"}},
+	}
+	if n := d.Hydrate(map[int]*MonitoringStack{7: restored, 8: nil}); n != 1 {
+		t.Fatalf("want one stack restored, got %d", n)
+	}
+
+	got, err := d.Get(t.Context(), 7, "restored")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.HasMetrics() || got.Metrics.Service.Name != "vmsingle" {
+		t.Errorf("the restored stack should be served as-is: %s", got.Summary())
+	}
+	if n := f.lists(); n != 0 {
+		t.Errorf("a restored cluster must cost no requests, got %d", n)
+	}
+}
+
+// A completed walk is handed to the store; a partial one never is.
+func TestOnlyACompleteWalkIsPersisted(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Objects: fxNoPorts(),
+		OK:      map[string]string{probeKey("monitoring", "prometheus-server"): fxPromOK()},
+	})
+	defer f.Close()
+
+	var saved []*MonitoringStack
+	d := NewDiscoverer(c, time.Minute)
+	d.Persist = func(_ context.Context, m *MonitoringStack) { saved = append(saved, m) }
+
+	if _, err := d.Get(t.Context(), 1, "c"); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(saved) != 1 || saved[0].ClusterID != 1 {
+		t.Fatalf("want the completed walk persisted once, got %+v", saved)
+	}
+
+	// A walk cut short is not an answer and must not be stored as one.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
+	defer cancel()
+	partial, err := d.discover(ctx, 2, "cut-short", false)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if !partial.Partial {
+		t.Skip("the walk finished before the deadline; nothing to assert")
+	}
+	if len(saved) != 1 {
+		t.Errorf("a partial walk was persisted: %+v", saved)
+	}
+}

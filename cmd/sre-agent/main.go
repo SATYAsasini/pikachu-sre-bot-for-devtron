@@ -86,6 +86,21 @@ func run() error {
 	// it found to use, for the clusters where more than one answers — and the
 	// lookup is a function rather than a snapshot so a choice saved in the UI
 	// takes effect on the next walk without a restart.
+	// Keep what discovery finds. Without this the map is forgotten on every
+	// restart and re-derived under whoever asks next, which on a large
+	// installation is the difference between an alert list that loads and
+	// one that walks every cluster first.
+	discoverer.Persist = func(ctx context.Context, stack *devtron.MonitoringStack) {
+		if err := store.SaveMonitoringStack(ctx, stack); err != nil {
+			logger.Warn("could not persist the monitoring stack", "cluster", stack.ClusterID, "err", err)
+		}
+	}
+	if stacks, err := store.LoadMonitoringStacks(ctx); err != nil {
+		logger.Warn("could not restore monitoring stacks", "err", err)
+	} else if n := discoverer.Hydrate(stacks); n > 0 {
+		logger.Info("monitoring stacks restored", "clusters", n)
+	}
+
 	discoverer.Overrides = func(ctx context.Context, clusterID int) devtron.Choice {
 		c, err := store.LoadMonitoringChoice(ctx, clusterID)
 		if err != nil {

@@ -88,6 +88,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	// Devtron would otherwise be served as though it were current.
 	s.Devtron.Reconfigure(saved.DevtronURL, saved.Token)
 	s.Discoverer.InvalidateAll()
+	// And from the table, not only from memory. Stored stacks outlive a
+	// restart now, so leaving the rows behind would hand the next boot a
+	// monitoring map belonging to a different installation.
+	if err := s.Runs.Store.ForgetMonitoringStacks(r.Context()); err != nil {
+		s.Log.Warn("could not clear stored monitoring stacks", "err", err)
+	}
 	// Capabilities measured against the previous installation say nothing
 	// about this one.
 	s.Caps.Reset(r.Context())

@@ -221,6 +221,10 @@ type Discoverer struct {
 	// is in and the state most installations stay in.
 	Overrides func(ctx context.Context, clusterID int) Choice
 
+	// Persist records a completed walk so it survives a restart. Optional;
+	// without it discovery is in-memory only, which is what it used to be.
+	Persist func(ctx context.Context, stack *MonitoringStack)
+
 	mu    sync.Mutex
 	cache map[int]*MonitoringStack
 
@@ -288,6 +292,11 @@ func (d *Discoverer) run(ctx context.Context, clusterID int, clusterName string,
 		}
 		if !m.Partial {
 			d.store(clusterID, m)
+			// Kept, so a restart does not cost the whole map. Detached from
+			// the caller for the same reason the walk is.
+			if d.Persist != nil {
+				d.Persist(context.WithoutCancel(ctx), m)
+			}
 		}
 		return m, nil
 	})
@@ -305,13 +314,44 @@ func (d *Discoverer) run(ctx context.Context, clusterID int, clusterName string,
 	}
 }
 
+// cached returns what is known about a cluster, however old.
+//
+// Age deliberately does not expire it. A stack that re-derives itself under
+// whoever asks next cannot be the basis for filtering alerts by cluster —
+// the same question gets a different answer depending on when it is asked,
+// and a list built from fifty of those never settles. A stored answer stands
+// until somebody asks for a new measurement, or until a read against it
+// fails. Stale() is for a caller that wants to offer a refresh, not for this
+// read path.
 func (d *Discoverer) cached(clusterID int) *MonitoringStack {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if m, ok := d.cache[clusterID]; ok && time.Since(m.DiscoveredAt) < d.ttl {
+	if m, ok := d.cache[clusterID]; ok {
 		return m
 	}
 	return nil
+}
+
+// Stale reports whether a cluster's stack is older than the refresh window,
+// for a caller deciding whether to offer a re-probe. It never causes one.
+func (d *Discoverer) Stale(clusterID int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	m, ok := d.cache[clusterID]
+	return !ok || time.Since(m.DiscoveredAt) > d.ttl
+}
+
+// Hydrate loads stored stacks at boot, so the first alert list after a
+// restart does not walk every cluster before it can show anything.
+func (d *Discoverer) Hydrate(stacks map[int]*MonitoringStack) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for id, m := range stacks {
+		if m != nil {
+			d.cache[id] = m
+		}
+	}
+	return len(d.cache)
 }
 
 func (d *Discoverer) store(clusterID int, m *MonitoringStack) {

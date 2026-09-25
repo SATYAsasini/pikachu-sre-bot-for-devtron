@@ -1,6 +1,7 @@
 package devtron
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -151,6 +152,8 @@ type fakeDevtron struct {
 	// kindCalls counts the capability probe's kind-specific reads, which is
 	// how "one request per cluster" is asserted.
 	kindCalls int
+	// nsCalls counts the namespace listings the reach check leads with.
+	nsCalls int
 }
 
 // fakeOpts configures the orchestrator's behaviour.
@@ -166,6 +169,14 @@ type fakeOpts struct {
 	// NeedsPort, when set for a service, makes the portless target fail so
 	// the port fallback is what has to work.
 	NeedsPort map[string]bool
+	// Namespaces is what GET /cluster/namespaces/{id} returns, which is the
+	// call the reach check now leads with.
+	Namespaces []string
+	// NamespacesStatus makes that call fail with this HTTP status. 400 with
+	// a "not reachable" body is how the orchestrator reports a cluster it
+	// cannot get to.
+	NamespacesStatus int
+	NamespacesBody   string
 	// ListKinds is how many objects each Kubernetes kind returns when listed
 	// across all namespaces, for the capability probe. A kind that is absent
 	// returns none; a nil map means kind-aware listing is off and Objects is
@@ -184,6 +195,28 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 	f := &fakeDevtron{probes: map[string]int{}}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/orchestrator/cluster/namespaces/", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.nsCalls++
+		f.mu.Unlock()
+		if o.ListDelay > 0 && !sleepCtxFake(r.Context(), o.ListDelay) {
+			return
+		}
+		if o.NamespacesStatus != 0 {
+			body := o.NamespacesBody
+			if body == "" {
+				body = `{"errors":[{"userMessage":"cluster is not reachable"}]}`
+			}
+			http.Error(w, body, o.NamespacesStatus)
+			return
+		}
+		out := make([]any, 0, len(o.Namespaces))
+		for _, n := range o.Namespaces {
+			out = append(out, n)
+		}
+		writeEnvelope(w, out)
+	})
+
 	mux.HandleFunc("/orchestrator/k8s/resource/list", func(w http.ResponseWriter, r *http.Request) {
 		// Read and count before any stall, so a fake that deliberately never
 		// answers still records that it was asked.
@@ -321,6 +354,23 @@ func (f *fakeDevtron) probed(ns, name string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.probes[probeKey(ns, name)]
+}
+
+// sleepCtxFake waits, reporting false when the caller gave up first.
+func sleepCtxFake(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// nsProbes is how many namespace listings were served.
+func (f *fakeDevtron) nsProbes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nsCalls
 }
 
 // kindProbes is how many kind-specific resource lists were served.

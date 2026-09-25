@@ -175,84 +175,94 @@ func TestLimitNamespaces(t *testing.T) {
 	}
 }
 
-// The reach check is one request. It used to be five on every cluster, which
-// on an install with forty of them was most of the sweep.
-func TestReachCheckCostsOneRequest(t *testing.T) {
+// The reach check leads with the namespaces endpoint, then one read. Two
+// calls, and both questions answered honestly — which listing Kind=Namespace
+// could not do, because a namespace-scoped token has every row of that list
+// filtered away and gets an empty 200 that looks identical to an idle
+// cluster.
+func TestReachCheckAsksNamespacesThenReads(t *testing.T) {
 	t.Parallel()
 
-	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{"Namespace": 6}})
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd", "monitoring"},
+		ListKinds:  map[string]int{"Pod": 12},
+	})
 	defer f.Close()
 	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
 
 	cap := p.Probe(t.Context(), 1, "live", nil)
 	if cap.Reach != ReachUsable {
-		t.Fatalf("a cluster that lists namespaces is usable, got %s", cap.Reach)
-	}
-	if n := f.kindProbes(); n != 1 {
-		t.Errorf("want one request, got %d", n)
-	}
-	if len(cap.Namespaces) != 6 {
-		t.Errorf("the namespace list is the useful part, got %v", cap.Namespaces)
-	}
-}
-
-// A cluster that cannot answer stops at the first request.
-func TestDeadClusterCostsOneCall(t *testing.T) {
-	t.Parallel()
-
-	f, c := newFakeDevtron(fakeOpts{
-		ListKinds: map[string]int{},
-		ListDelay: 2 * time.Second, // longer than the probe timeout: never answers
-	})
-	defer f.Close()
-	p := &Prober{c: c, Timeout: 150 * time.Millisecond, Concurrency: 4, MaxInFlight: 4}
-
-	cap := p.Probe(t.Context(), 7, "dead", []string{"devtroncd", "prod"})
-	if cap.Reach == ReachUsable {
-		t.Fatalf("a cluster that answers nothing is not usable: %+v", cap)
-	}
-	if n := f.kindProbes(); n != 1 {
-		t.Errorf("want one request against a dead cluster, got %d", n)
-	}
-}
-
-// A token that cannot list namespaces across the cluster but can read inside
-// one is a usable cluster. That is the ordinary shape of an environment
-// scoped token, and it used to be reported empty and hidden.
-func TestNamespaceScopedTokenIsUsable(t *testing.T) {
-	t.Parallel()
-
-	f, c := newFakeDevtron(fakeOpts{
-		ListKinds:     map[string]int{}, // no namespaces visible cluster-wide
-		NamespacePods: map[string]int{"devtroncd": 4},
-	})
-	defer f.Close()
-	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
-
-	cap := p.Probe(t.Context(), 1, "scoped", []string{"devtroncd", "other"})
-	if cap.Reach != ReachUsable {
 		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
 	}
-	if !strings.Contains(cap.Detail, "devtroncd") || !strings.Contains(cap.Detail, "not across all namespaces") {
-		t.Errorf("it must say the read was scoped, got %q", cap.Detail)
+	if len(cap.Namespaces) != 2 {
+		t.Errorf("the namespace grant is the useful part, got %v", cap.Namespaces)
 	}
-	// The cluster-wide list, then namespaces until one yields. devtroncd is
-	// first and has pods, so two.
-	if n := f.kindProbes(); n != 2 {
-		t.Errorf("want two requests, got %d", n)
+	if n, k := f.nsProbes(), f.kindProbes(); n != 1 || k != 1 {
+		t.Errorf("want one namespace call and one read, got %d and %d", n, k)
 	}
 }
 
-// With nowhere else to look, nothing visible stays nothing visible.
-func TestNoNamespacesAnywhereIsNotUsable(t *testing.T) {
+// A cluster the orchestrator cannot reach says so on the first call, with a
+// 400 rather than an empty list — the one place that distinction is made.
+func TestUnreachableClusterIsToldApartFromAnEmptyOne(t *testing.T) {
 	t.Parallel()
 
-	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{}})
+	f, c := newFakeDevtron(fakeOpts{
+		NamespacesStatus: 400,
+		NamespacesBody:   `{"errors":[{"userMessage":"cluster is not reachable"}]}`,
+	})
 	defer f.Close()
 	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
 
-	if got := p.Probe(t.Context(), 1, "idle", nil).Reach; got == ReachUsable {
-		t.Errorf("nothing was visible anywhere, got %s", got)
+	cap := p.Probe(t.Context(), 7, "dead", nil)
+	if cap.Reach != ReachUnreachable {
+		t.Fatalf("want unreachable, got %s (%s)", cap.Reach, cap.Detail)
+	}
+	// It stops there. No point reading objects from a cluster nobody can get to.
+	if k := f.kindProbes(); k != 0 {
+		t.Errorf("want no object reads against an unreachable cluster, got %d", k)
+	}
+}
+
+// No namespace grant means nothing can be read here, whatever the cluster's
+// own health. That is a token problem and must not be reported as an outage.
+func TestNoNamespaceGrantIsForbidden(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{Namespaces: nil, ListKinds: map[string]int{"Pod": 99}})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "no-grant", nil)
+	if cap.Reach != ReachForbidden {
+		t.Fatalf("want forbidden, got %s", cap.Reach)
+	}
+	if !strings.Contains(cap.Detail, "no namespace") {
+		t.Errorf("it must name the cause, got %q", cap.Detail)
+	}
+	if k := f.kindProbes(); k != 0 {
+		t.Errorf("nothing is readable, so nothing should be read; got %d", k)
+	}
+}
+
+// Reachable, permitted, and nothing running. Offering that is offering an
+// investigation that can only conclude nothing.
+func TestGrantedButEmptyIsNotUsable(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd"},
+		ListKinds:  map[string]int{},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "idle", nil)
+	if cap.Reach != ReachEmpty {
+		t.Fatalf("want empty, got %s", cap.Reach)
+	}
+	if !strings.Contains(cap.Detail, "no pods are visible") {
+		t.Errorf("it must say what was missing, got %q", cap.Detail)
 	}
 }
 
@@ -261,7 +271,10 @@ func TestNoNamespacesAnywhereIsNotUsable(t *testing.T) {
 func TestDevtronStatusIsTakenWithoutARequest(t *testing.T) {
 	t.Parallel()
 
-	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{"Namespace": 3}})
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd"},
+		ListKinds:  map[string]int{"Pod": 3},
+	})
 	defer f.Close()
 	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
 
@@ -284,9 +297,9 @@ func TestDevtronStatusIsTakenWithoutARequest(t *testing.T) {
 	if byID[1].Reach != ReachUsable {
 		t.Errorf("the healthy cluster should still be measured, got %s", byID[1].Reach)
 	}
-	// One request in total: the healthy cluster's. The broken one cost none.
-	if n := f.kindProbes(); n != 1 {
-		t.Errorf("want one request across both clusters, got %d", n)
+	// The broken one cost nothing at all.
+	if n := f.nsProbes(); n != 1 {
+		t.Errorf("want one namespace call across both clusters, got %d", n)
 	}
 }
 
@@ -295,7 +308,10 @@ func TestDevtronStatusIsTakenWithoutARequest(t *testing.T) {
 func TestForceProbesDespiteDevtronStatus(t *testing.T) {
 	t.Parallel()
 
-	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{"Namespace": 2}})
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd"},
+		ListKinds:  map[string]int{"Pod": 2},
+	})
 	defer f.Close()
 	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
 
@@ -308,8 +324,43 @@ func TestForceProbesDespiteDevtronStatus(t *testing.T) {
 	if caps[0].FromDevtron {
 		t.Error("a measured verdict is not Devtron's")
 	}
-	if n := f.kindProbes(); n != 1 {
-		t.Errorf("want the cluster actually probed, got %d requests", n)
+	if n := f.nsProbes(); n != 1 {
+		t.Errorf("want the cluster actually probed, got %d namespace calls", n)
+	}
+}
+
+// Every step is recorded, so "what did you ask and what did it say" is
+// answerable from the row rather than from the source.
+func TestProbeRecordsWhatItAsked(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		Namespaces: []string{"devtroncd"},
+		ListKinds:  map[string]int{"Pod": 4},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "scoped", nil)
+	if len(cap.Steps) != 2 {
+		t.Fatalf("want a step per question, got %d: %+v", len(cap.Steps), cap.Steps)
+	}
+	if !strings.Contains(cap.Steps[0].Ask, "namespaces") || cap.Steps[0].Outcome != "answered with 1" {
+		t.Errorf("first step: %+v", cap.Steps[0])
+	}
+	if !strings.Contains(cap.Steps[1].Ask, "Pod") || cap.Steps[1].Outcome != "answered with 4" {
+		t.Errorf("second step: %+v", cap.Steps[1])
+	}
+	for i, st := range cap.Steps {
+		if st.Path == "" {
+			t.Errorf("step %d must name the endpoint so it can be repeated by hand", i)
+		}
+	}
+
+	// A verdict taken from Devtron records that too, with no request.
+	d := FromDevtronStatus(Cluster{ID: 2, ClusterName: "x", ErrorInCx: "i/o timeout"})
+	if len(d.Steps) != 1 || d.Steps[0].Outcome != "Devtron reports it cannot connect" {
+		t.Errorf("devtron verdict steps: %+v", d.Steps)
 	}
 }
 
@@ -335,65 +386,26 @@ func TestKindsMeasuresEveryKind(t *testing.T) {
 	}
 }
 
-// Answering is not enough. A cluster where every read succeeds and returns
-// nothing produces an investigation that concludes nothing, which is the
-// outcome this measurement exists to keep out of the picker. It was briefly
-// reported usable, and the probe record is what made that visible.
-func TestEverythingEmptyIsNotUsable(t *testing.T) {
+func TestDecodeNamespaceList(t *testing.T) {
 	t.Parallel()
 
-	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{}})
-	defer f.Close()
-	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
-
-	cap := p.Probe(t.Context(), 1, "idle", []string{"one", "two"})
-	if cap.Reach == ReachUsable {
-		t.Fatalf("nothing came back anywhere; not usable: %+v", cap)
+	// Plain names, the /v2 metadata shape, and the all-clusters map — a
+	// reach check must not fail because a Devtron version wraps them
+	// differently.
+	cases := map[string]any{
+		"strings":    []any{"b", "a", "a"},
+		"objects":    []any{map[string]any{"name": "b"}, map[string]any{"name": "a"}},
+		"by cluster": map[string]any{"c1": []any{"a"}, "c2": []any{"b"}},
 	}
-	if cap.Reach != ReachEmpty {
-		t.Errorf("want empty, got %s", cap.Reach)
-	}
-	// Both namespaces tried before concluding: one empty namespace is not
-	// evidence that a cluster is idle.
-	if n := f.kindProbes(); n != 3 {
-		t.Errorf("want the cluster-wide read plus both namespaces, got %d", n)
-	}
-	if !strings.Contains(cap.Detail, "one, two") {
-		t.Errorf("it must say where it looked, got %q", cap.Detail)
-	}
-}
-
-// Every step is recorded, so "what did you ask and what did it say" is
-// answerable from the row rather than from the source.
-func TestProbeRecordsWhatItAsked(t *testing.T) {
-	t.Parallel()
-
-	f, c := newFakeDevtron(fakeOpts{
-		ListKinds:     map[string]int{},
-		NamespacePods: map[string]int{"devtroncd": 4},
-	})
-	defer f.Close()
-	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
-
-	cap := p.Probe(t.Context(), 1, "scoped", []string{"devtroncd"})
-	if len(cap.Steps) != 2 {
-		t.Fatalf("want a step per question, got %d: %+v", len(cap.Steps), cap.Steps)
-	}
-	if !strings.Contains(cap.Steps[0].Ask, "Namespace") || cap.Steps[0].Outcome != "answered with nothing" {
-		t.Errorf("first step: %+v", cap.Steps[0])
-	}
-	if !strings.Contains(cap.Steps[1].Ask, "devtroncd") || cap.Steps[1].Outcome != "answered with 4" {
-		t.Errorf("second step: %+v", cap.Steps[1])
-	}
-	for i, st := range cap.Steps {
-		if st.Path == "" {
-			t.Errorf("step %d must name the endpoint so it can be repeated by hand", i)
+	for name, raw := range cases {
+		got := decodeNamespaceList(raw)
+		if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Errorf("%s: want [a b], got %v", name, got)
 		}
 	}
-
-	// A verdict taken from Devtron records that too, with no request.
-	d := FromDevtronStatus(Cluster{ID: 2, ClusterName: "x", ErrorInCx: "i/o timeout"})
-	if len(d.Steps) != 1 || d.Steps[0].Outcome != "Devtron reports it cannot connect" {
-		t.Errorf("devtron verdict steps: %+v", d.Steps)
+	for name, raw := range map[string]any{"nil": nil, "string": "a", "empty": []any{}} {
+		if got := decodeNamespaceList(raw); len(got) != 0 {
+			t.Errorf("%s: want none, got %v", name, got)
+		}
 	}
 }

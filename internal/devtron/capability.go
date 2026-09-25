@@ -247,83 +247,95 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 	measured := Capability{ClusterID: clusterID, ClusterName: clusterName, ProbedAt: time.Now().UTC()}
 	started := time.Now()
 
-	list := p.probeKind(ctx, clusterID, GVKNamespace, "")
-	measured.LatencyMs = time.Since(started).Milliseconds()
-	measured.Steps = append(measured.Steps, list.step(""))
-
-	// It did not answer at all. Nothing else is worth asking.
-	if list.reach == ReachUnreachable || list.reach == ReachError {
-		measured.Reach, measured.Detail = list.reach, list.access.Detail
+	// Which namespaces may this token use here, and can the orchestrator
+	// reach the cluster at all? One call answers both, from the role grants
+	// rather than from a filtered list.
+	release, ok := p.acquire(ctx)
+	if !ok {
+		measured.Reach = ReachUnknown
+		measured.Detail = "not reached before the sweep ended"
 		return measured
 	}
-
-	if list.access.Allowed && list.access.Count > 0 {
-		measured.Reach = ReachUsable
-		measured.Namespaces = list.namespaces
-		return measured
-	}
-
-	// Refused, or allowed but filtered down to nothing — indistinguishable,
-	// and in both cases the cluster-wide question was the wrong one. If
-	// Devtron knows namespaces for this cluster, ask inside one of them
-	// instead: that is the read the agent would actually perform.
-	ns := limitNamespaces(fallback, maxProbeNamespaces)
-	if len(ns) == 0 {
-		measured.Steps = append(measured.Steps, ProbeStep{
-			Ask:     "look inside a namespace instead",
-			Outcome: "skipped",
-			Detail:  "Devtron maps no environments to this cluster, so there was nowhere narrower to ask",
-		})
-		if list.reach == ReachForbidden {
-			measured.Reach, measured.Detail = ReachForbidden, list.access.Detail
-		} else {
-			measured.Reach = ReachEmpty
-		}
-		return measured
-	}
-
-	// Ask in each of them until one yields something. Answering is not
-	// enough on its own: a cluster where every read succeeds and returns
-	// nothing produces an investigation that concludes nothing, which is the
-	// exact outcome this whole measurement exists to keep out of the picker.
-	// One empty namespace is also not evidence the cluster is idle, so the
-	// others are tried before saying so.
-	var refused bool
-	for _, n := range ns {
-		scoped := p.probeKind(ctx, clusterID, GVKPod, n)
-		measured.Steps = append(measured.Steps, scoped.step(n))
-
-		if scoped.access.Allowed && scoped.access.Count > 0 {
-			measured.Reach = ReachUsable
-			measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
-			measured.Detail = "readable in " + n + ", not across all namespaces"
-			measured.LatencyMs = time.Since(started).Milliseconds()
-			return measured
-		}
-		switch {
-		case scoped.access.Allowed:
-			// Answered, empty. Keep looking.
-		case scoped.reach == ReachForbidden:
-			refused = true
-		default:
-			// Could not be reached at all; that outranks anything else.
-			measured.Reach, measured.Detail = scoped.reach, scoped.access.Detail
-			measured.LatencyMs = time.Since(started).Milliseconds()
-			return measured
-		}
-	}
+	nsCtx, cancel := context.WithTimeout(ctx, p.Timeout)
+	namespaces, err := p.c.ClusterNamespaces(nsCtx, clusterID)
+	cancel()
+	release()
 
 	measured.LatencyMs = time.Since(started).Milliseconds()
-	measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
-	if refused {
+	measured.Steps = append(measured.Steps, namespaceStep(namespaces, err, measured.LatencyMs))
+
+	if err != nil {
+		measured.Reach, measured.Detail = classifyNamespaceError(nsCtx, err)
+		return measured
+	}
+	measured.Namespaces = limitNamespaces(namespaces, maxNamespacesShown)
+
+	// A token with no namespace grant on this cluster cannot read anything
+	// in it, whatever the cluster's own health.
+	if len(namespaces) == 0 {
 		measured.Reach = ReachForbidden
-		measured.Detail = "the token was refused in every namespace Devtron maps to this cluster"
+		measured.Detail = "the orchestrator reached this cluster, but the token holds no namespace on it"
 		return measured
 	}
-	measured.Reach = ReachEmpty
-	measured.Detail = "every read answered and every one was empty, cluster-wide and in " +
-		strings.Join(ns, ", ")
+
+	// Then one read, across all namespaces. The list endpoint returns the
+	// rows the token can see whatever its scope, so this works for a
+	// cluster-wide grant and a namespace-scoped one alike — no per-namespace
+	// loop needed.
+	pods := p.probeKind(ctx, clusterID, GVKPod, "")
+	measured.Steps = append(measured.Steps, pods.step(""))
+	measured.LatencyMs = time.Since(started).Milliseconds()
+
+	switch {
+	case pods.access.Allowed && pods.access.Count > 0:
+		measured.Reach = ReachUsable
+	case pods.access.Allowed:
+		// Reachable and permitted, with nothing running. Offering it is
+		// offering an investigation that can only conclude nothing.
+		measured.Reach = ReachEmpty
+		measured.Detail = fmt.Sprintf(
+			"reachable, and the token holds %d namespace(s) here, but no pods are visible in any of them",
+			len(namespaces))
+	default:
+		measured.Reach, measured.Detail = pods.reach, pods.access.Detail
+	}
 	return measured
+}
+
+// namespaceStep records the one call the reach check leads with.
+func namespaceStep(namespaces []string, err error, latencyMs int64) ProbeStep {
+	st := ProbeStep{
+		Ask:       "list the namespaces this token may use",
+		Path:      "GET /orchestrator/cluster/namespaces/{clusterId}",
+		LatencyMs: latencyMs,
+	}
+	switch {
+	case err != nil:
+		st.Outcome = "failed"
+		st.Detail = err.Error()
+	case len(namespaces) == 0:
+		st.Outcome = "answered with none"
+		st.Detail = "the token holds no namespace on this cluster"
+	default:
+		st.Outcome = fmt.Sprintf("answered with %d", len(namespaces))
+	}
+	return st
+}
+
+// classifyNamespaceError reads the one endpoint that does distinguish a
+// cluster it cannot reach from a token it will not serve.
+func classifyNamespaceError(ctx context.Context, err error) (Reach, string) {
+	var de *Error
+	if errors.As(err, &de) {
+		// The orchestrator answers 400 with ErrClusterNotReachable when it
+		// cannot get to the cluster, which is the distinction the resource
+		// list cannot make.
+		if de.Status == http.StatusBadRequest && strings.Contains(
+			strings.ToLower(de.Body), "reachable") {
+			return ReachUnreachable, "the orchestrator cannot reach this cluster: " + Truncate(de.Body, 160)
+		}
+	}
+	return classifyProbeError(ctx, err)
 }
 
 // Kinds measures what the token may read in one cluster, optionally inside

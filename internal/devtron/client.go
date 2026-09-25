@@ -142,28 +142,37 @@ func (e *Error) Error() string {
 func (e *Error) Reason() string {
 	switch {
 	case e.Unauthorized():
-		return fmt.Sprintf("HTTP %d — Devtron refused this read. The token needs Kubernetes Resources → View on this cluster; reaching a named port also needs Resource name \"All resources\".", e.Status)
+		// The proxy builds its RBAC object from the URL segment verbatim, so
+		// "prom", "prom:9090" and "https:prom:9090" are three different
+		// resource names. Only a grant of "*" matches the ones with a port.
+		return fmt.Sprintf("HTTP %d — Devtron refused this read. The token needs Kubernetes Resources → View on this cluster, and a target naming a port (name:port, https:name:port) matches only a grant of \"All resources\".", e.Status)
 	case e.Status == http.StatusNotFound:
 		return "HTTP 404 — no such Service in that namespace, or the proxy rejected the path."
 	case e.Status == http.StatusServiceUnavailable:
-		if looksLikeDevtronErrorPage(e.Body) {
-			return "HTTP 503 — Devtron's own error page came back, so the request did not reach the Service. The orchestrator could not route to this cluster's Kubernetes proxy; it is not a statement about the Service itself."
+		// The orchestrator's proxy handler only ever writes JSON Kubernetes
+		// Status objects, and an RBAC refusal from it is a 403, never a 503.
+		// So an HTML body did not come from Devtron at all — something at the
+		// edge replaced it — and a JSON one came from the cluster's own API
+		// server, which returns 503 when its service proxy cannot reach the
+		// pods behind a Service.
+		if looksLikeHTML(e.Body) {
+			return "HTTP 503 with an HTML body — this did not come from Devtron, whose proxy only ever answers JSON. Something in front of it replaced the response, so the real cause is hidden. Ask whoever runs the ingress to stop rewriting 503s on the Kubernetes proxy path."
 		}
-		return "HTTP 503 — the Service was reached and refused: " + Truncate(oneLine(e.Body), 140)
+		return "HTTP 503 from the cluster's API server — its service proxy could not reach the pods behind this Service. Either the Service has no ready endpoints, or the control plane has no route to them: " + Truncate(oneLine(e.Body), 120)
 	case e.Status >= 500:
 		return fmt.Sprintf("HTTP %d — the orchestrator failed while serving this.", e.Status)
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.Status, Truncate(e.Body, 160))
 }
 
-// looksLikeDevtronErrorPage reports whether a body is Devtron's branded HTML
-// error page rather than anything the target Service said.
+// looksLikeHTML reports whether a body is a rendered error page rather than
+// anything a Kubernetes API answered.
 //
-// The distinction matters: the same 503 means "Devtron could not route this"
-// when it carries that page, and "the Service said no" when it carries
-// something else. Treating them alike produced advice about ports on
-// services whose ports were identical to ones that worked.
-func looksLikeDevtronErrorPage(body string) bool {
+// Both Devtron's proxy handler and a cluster's API server answer with JSON
+// Status objects. An HTML body therefore proves the response was replaced in
+// transit, which is worth saying plainly: the status code is real and the
+// reason behind it has been thrown away.
+func looksLikeHTML(body string) bool {
 	b := strings.ToLower(body)
 	return strings.Contains(b, "<!doctype html") || strings.Contains(b, "<html")
 }

@@ -265,12 +265,12 @@ func TestErrorReasonLeadsWithTheReason(t *testing.T) {
 		{"unauthorized is the same class", &Error{Status: 401, Path: proxyPath}, "HTTP 401", "Kubernetes Resources"},
 		{"not found is not a permission problem", &Error{Status: 404, Path: proxyPath}, "HTTP 404", "no such Service"},
 		{
-			"503 with Devtron's page blames the route, not the Service",
+			"503 with an HTML body says the response was replaced",
 			&Error{Status: 503, Path: proxyPath, Body: "<!DOCTYPE html><html><title>503</title></html>"},
-			"HTTP 503", "did not reach the Service",
+			"HTTP 503", "only ever answers JSON",
 		},
 		{
-			"503 from the Service itself quotes it",
+			"503 with a real body quotes it",
 			&Error{Status: 503, Path: proxyPath, Body: "no healthy upstream"},
 			"HTTP 503", "no healthy upstream",
 		},

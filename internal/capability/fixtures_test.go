@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,6 +97,24 @@ func newFakeOrchestrator(o fakeOpts) (*fakeOrchestrator, *devtron.Client) {
 	// keeps the fixture to one source of cluster identity.
 	mux.HandleFunc("/orchestrator/env/autocomplete/helm", func(w http.ResponseWriter, _ *http.Request) {
 		writeEnvelope(w, []any{})
+	})
+
+	// The reach check leads with this: which namespaces may the token use
+	// here, and can the orchestrator reach the cluster at all.
+	mux.HandleFunc("/orchestrator/cluster/namespaces/", func(w http.ResponseWriter, r *http.Request) {
+		id := 0
+		if parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/"); len(parts) > 0 {
+			id, _ = strconv.Atoi(parts[len(parts)-1])
+		}
+		if o.ProbeDelay > 0 && !sleepCtx(r.Context(), o.ProbeDelay) {
+			return
+		}
+		if !o.Usable[id] {
+			// A cluster the orchestrator cannot get to.
+			http.Error(w, `{"errors":[{"userMessage":"cluster is not reachable"}]}`, http.StatusBadRequest)
+			return
+		}
+		writeEnvelope(w, []any{"devtroncd", "monitoring"})
 	})
 
 	mux.HandleFunc("/orchestrator/k8s/resource/list", func(w http.ResponseWriter, r *http.Request) {

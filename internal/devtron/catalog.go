@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -131,6 +132,60 @@ func (c *Client) ClusterByName(ctx context.Context, name string) (*Cluster, erro
 		}
 	}
 	return nil, fmt.Errorf("no Devtron cluster named %q", name)
+}
+
+// ClusterNamespaces lists the namespaces this token may use in one cluster.
+//
+// This is the right question to ask first, and it took reading the
+// orchestrator's source to learn why. /k8s/resource/list never refuses on
+// RBAC: it lists with Devtron's own cluster credentials and then drops the
+// rows the token cannot see, so "no access" and "nothing there" both come
+// back as 200 with an empty list and cannot be told apart. Worse, listing
+// Kind=Namespace is the one case guaranteed to mislead — Namespace is
+// cluster-scoped, so its RBAC object is built with namespace "*", and a
+// token scoped to namespaces has every row filtered out.
+//
+// This endpoint answers from the role grants instead, and a cluster the
+// orchestrator cannot reach comes back 400 rather than empty. One call, and
+// the two questions that matter are both answered honestly.
+func (c *Client) ClusterNamespaces(ctx context.Context, clusterID int) ([]string, error) {
+	var raw any
+	if err := c.get(ctx, "/orchestrator/cluster/namespaces/"+strconv.Itoa(clusterID), nil, &raw); err != nil {
+		return nil, err
+	}
+	return decodeNamespaceList(raw), nil
+}
+
+// decodeNamespaceList is deliberately loose. The endpoint has a plain form
+// and a /v2 metadata form, and a reach check should not fail because a
+// Devtron version wraps the names differently.
+func decodeNamespaceList(raw any) []string {
+	var out []string
+	switch v := raw.(type) {
+	case []any:
+		for _, item := range v {
+			switch n := item.(type) {
+			case string:
+				if n != "" {
+					out = append(out, n)
+				}
+			case map[string]any:
+				for _, key := range []string{"name", "namespace"} {
+					if s, ok := n[key].(string); ok && s != "" {
+						out = append(out, s)
+						break
+					}
+				}
+			}
+		}
+	case map[string]any:
+		// The all-clusters form is a map of cluster name to namespaces.
+		for _, item := range v {
+			out = append(out, decodeNamespaceList(item)...)
+		}
+	}
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 // Environments lists every environment, flattened. This is the step-0 call:

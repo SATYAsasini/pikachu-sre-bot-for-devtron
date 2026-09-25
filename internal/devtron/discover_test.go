@@ -753,3 +753,65 @@ func TestProbeFailureReportsEveryAttempt(t *testing.T) {
 		t.Errorf("want the first HTTP error reachable through Unwrap, got %v", de)
 	}
 }
+
+// A Service whose object arrived without a spec still has to be reachable.
+//
+// Some Devtron versions answer the filtered resource list with table rows
+// rather than whole objects, so every candidate comes back with no ports.
+// Without a port the Kubernetes service proxy only resolves for a
+// single-port Service, so a two-port vmsingle answers 503 and — before this
+// — there was nothing left to try. On a 52-cluster install that was every
+// monitoring service on every cluster.
+func TestPortlessCandidatesFallBackToWellKnownPorts(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		// No ports on the Service, exactly as that response shape delivers.
+		Objects: []map[string]any{svc("monitoring", "vmsingle-victoria-metrics")},
+		OK:      map[string]string{probeKey("monitoring", "vmsingle-victoria-metrics"): fxPromOK()},
+		// And the portless target does not resolve, as it does not for a
+		// multi-port Service.
+		NeedsPort: map[string]bool{probeKey("monitoring", "vmsingle-victoria-metrics"): true},
+	})
+	defer f.Close()
+
+	m, err := NewDiscoverer(c, time.Minute).Get(t.Context(), 1, "no-spec")
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if !m.HasMetrics() {
+		t.Fatalf("a portless candidate must still be reachable: %s / %v", m.Summary(), m.Notes)
+	}
+	if got := m.Metrics.Service.Port; got != "8429" {
+		t.Errorf("want the flavor's published port, got %q", got)
+	}
+}
+
+func TestPortsForPrefersWhatTheObjectDeclared(t *testing.T) {
+	t.Parallel()
+
+	declared := &Endpoint{Flavor: FlavorVictoriaMetrics, Ports: []string{"9999"}}
+	if got := portsFor(declared); len(got) != 1 || got[0] != "9999" {
+		t.Errorf("a declared port wins over the default, got %v", got)
+	}
+
+	// Every flavor the discovery filter can produce needs a default, or a
+	// portless install of it is unreachable and nothing says why.
+	for _, f := range []Flavor{
+		FlavorVictoriaMetrics, FlavorPrometheus, FlavorAlertmanager,
+		FlavorVMAlert, FlavorThanos, FlavorMimir,
+	} {
+		if len(portsFor(&Endpoint{Flavor: f})) == 0 {
+			t.Errorf("%s has no default port", f)
+		}
+	}
+	// The cap has to clear the longest list, or the last one is never tried.
+	for f, ports := range wellKnownPorts {
+		if len(ports) > maxPortRetries {
+			t.Errorf("%s declares %d ports but only %d are tried", f, len(ports), maxPortRetries)
+		}
+	}
+	if got := portsFor(&Endpoint{Flavor: FlavorUnknown}); len(got) != 0 {
+		t.Errorf("an unrecognised flavor has no defaults to offer, got %v", got)
+	}
+}

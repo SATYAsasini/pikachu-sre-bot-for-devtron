@@ -57,8 +57,9 @@ const (
 	// Service must not hold up the queue behind it.
 	probeParallel = 6
 	// maxPortRetries caps the portless-then-each-port fallback. A Service
-	// advertising six ports is not worth thirty seconds.
-	maxPortRetries = 3
+	// advertising six ports is not worth thirty seconds — but it has to
+	// clear the four a VictoriaMetrics install can legitimately use.
+	maxPortRetries = 4
 )
 
 // Endpoint is a discovered monitoring service and the API base that answered.
@@ -588,9 +589,40 @@ func (d *Discoverer) probeAlerts(ctx context.Context, clusterID int, e *Endpoint
 	return true
 }
 
+// wellKnownPorts are the ports each flavor serves its API on.
+//
+// The Service object is supposed to carry its own ports, and on some Devtron
+// versions it does — the filtered resource list returns whole objects with a
+// spec. On others the same call returns table rows with no spec at all, and
+// every candidate arrives with no ports whatsoever. That is not a cosmetic
+// difference: without a port the Kubernetes service proxy only resolves for
+// a Service with exactly one port, so a two-port vmsingle answers 503 and
+// there is nothing left to retry with. Measured on a 52-cluster install,
+// that was every monitoring service on every cluster.
+//
+// So when the object did not say, these are tried. They are the published
+// defaults for each flavor, not guesses about a particular install.
+var wellKnownPorts = map[Flavor][]string{
+	FlavorVictoriaMetrics: {"8429", "8428", "8481", "8427"},
+	FlavorPrometheus:      {"9090", "80"},
+	FlavorAlertmanager:    {"9093"},
+	FlavorVMAlert:         {"8080"},
+	FlavorThanos:          {"10902", "9090"},
+	FlavorMimir:           {"8080", "9009"},
+}
+
+// portsFor is what to try after the portless target, declared ports first.
+func portsFor(e *Endpoint) []string {
+	if len(e.Ports) > 0 {
+		return e.Ports
+	}
+	return wellKnownPorts[e.Flavor]
+}
+
 // tryGet attempts the portless proxy target first, because naming a port
-// requires the token to hold "*" on resource names. If that fails and the
-// Service advertises ports, it retries with each one.
+// requires the token to hold "*" on resource names. If that fails, it retries
+// with each port the Service declared — or, when it declared none, with the
+// flavor's published defaults.
 func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, path string, q url.Values) ([]byte, error) {
 	svc := e.Service
 	svc.Port = ""
@@ -608,7 +640,7 @@ func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, pat
 	}
 	failures = append(failures, attemptFailure{port: "", err: err})
 
-	ports := e.Ports
+	ports := portsFor(e)
 	if len(ports) > maxPortRetries {
 		ports = ports[:maxPortRetries]
 	}

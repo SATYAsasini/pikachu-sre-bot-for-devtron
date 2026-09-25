@@ -114,6 +114,9 @@ func run() error {
 
 	caps := capability.New(dc, store, logger, runs.StaleBefore)
 	caps.Tune(time.Duration(cfg.Run.ProbeTimeoutSeconds)*time.Second, cfg.Run.ProbeConcurrency)
+	// Monitoring discovery reaches services through the same proxy, so it
+	// lives or dies by the same "how slow is this install" number.
+	discoverer.ProbeTimeout = time.Duration(cfg.Run.ProbeTimeoutSeconds) * time.Second
 	caps.Hydrate(ctx)
 	if dc.HasToken() {
 		// Measure in the background so the first page view is not blocked by

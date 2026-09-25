@@ -3,6 +3,7 @@ package devtron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -38,12 +39,20 @@ const (
 // cached and served to everybody as fact.
 const (
 	// DiscoveryBudget caps one whole walk, however many candidates there are.
-	DiscoveryBudget = 45 * time.Second
+	DiscoveryBudget = 2 * time.Minute
 	// candidateBudget caps everything spent on one candidate: every API base
 	// and every port retry together, not each.
-	candidateBudget = 12 * time.Second
-	// probeTimeout caps a single HTTP attempt.
-	probeTimeout = 4 * time.Second
+	candidateBudget = 40 * time.Second
+	// DefaultDiscoveryProbeTimeout caps a single HTTP attempt.
+	//
+	// This was cut to 4s to make a walk finish sooner, which was a mistake.
+	// The request is a service proxy hop — Devtron to the cluster's API
+	// server to the pod — and on an install where a plain resource list takes
+	// most of 7 seconds, 4 is not enough for any of it. Discovery is
+	// single-flighted, detached from its caller and cached for fifteen
+	// minutes, so being generous here costs almost nothing and being mean
+	// costs an entire cluster's monitoring.
+	DefaultDiscoveryProbeTimeout = 10 * time.Second
 	// probeParallel is how many candidates are in flight at once. One dead
 	// Service must not hold up the queue behind it.
 	probeParallel = 6
@@ -201,6 +210,10 @@ const discoveryCEL = `self.metadata.name.contains('prometheus') || ` +
 type Discoverer struct {
 	c   *Client
 	ttl time.Duration
+
+	// ProbeTimeout caps one HTTP attempt against a candidate. Zero uses
+	// DefaultDiscoveryProbeTimeout.
+	ProbeTimeout time.Duration
 
 	// Overrides returns the operator's pinned endpoints for a cluster. Nil
 	// means nothing is pinned anywhere, which is the state a fresh install
@@ -544,7 +557,7 @@ func (d *Discoverer) probeMetrics(ctx context.Context, clusterID int, e *Endpoin
 		e.APIBase = base
 		body, err := d.tryGet(ctx, clusterID, e, e.Path("api/v1/query"), q)
 		if err != nil {
-			e.Detail = err.Error()
+			e.Detail = probeDetail(err)
 			continue
 		}
 		var probe struct {
@@ -567,7 +580,7 @@ func (d *Discoverer) probeAlerts(ctx context.Context, clusterID int, e *Endpoint
 		path = "api/v1/alerts" // vmalert has no v2 API
 	}
 	if _, err := d.tryGet(ctx, clusterID, e, path, nil); err != nil {
-		e.Detail = err.Error()
+		e.Detail = probeDetail(err)
 		return false
 	}
 	e.Reachable = true
@@ -581,12 +594,19 @@ func (d *Discoverer) probeAlerts(ctx context.Context, clusterID int, e *Endpoint
 func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, path string, q url.Values) ([]byte, error) {
 	svc := e.Service
 	svc.Port = ""
+
+	// Every attempt's failure is kept. Returning only the first one meant a
+	// fast rejection of the portless target hid what happened on the ports —
+	// so a probe that actually timed out reported somebody else's HTTP 503,
+	// and the operator went looking for a service that was never the problem.
+	var failures []attemptFailure
+
 	body, err := d.attempt(ctx, clusterID, svc, path, q)
 	if err == nil {
 		e.Service.Port = ""
 		return body, nil
 	}
-	firstErr := err
+	failures = append(failures, attemptFailure{port: "", err: err})
 
 	ports := e.Ports
 	if len(ports) > maxPortRetries {
@@ -602,14 +622,81 @@ func (d *Discoverer) tryGet(ctx context.Context, clusterID int, e *Endpoint, pat
 			e.Service.Port = p
 			return body, nil
 		}
+		failures = append(failures, attemptFailure{port: p, err: err})
 	}
-	return nil, firstErr
+	return nil, &probeFailure{attempts: failures}
+}
+
+// attemptFailure is one proxy target that did not answer.
+type attemptFailure struct {
+	port string // "" for the portless target
+	err  error
+}
+
+// probeFailure is every target tried for one candidate, so the reason on
+// screen covers all of them rather than whichever failed first.
+type probeFailure struct{ attempts []attemptFailure }
+
+func (p *probeFailure) Error() string {
+	if len(p.attempts) == 0 {
+		return "nothing was tried"
+	}
+	// All the same reason: say it once rather than three times.
+	first := probeDetail(p.attempts[0].err)
+	same := true
+	for _, a := range p.attempts[1:] {
+		if probeDetail(a.err) != first {
+			same = false
+			break
+		}
+	}
+	if same {
+		return first
+	}
+	parts := make([]string, 0, len(p.attempts))
+	for _, a := range p.attempts {
+		where := "no port"
+		if a.port != "" {
+			where = ":" + a.port
+		}
+		parts = append(parts, where+" → "+probeDetail(a.err))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func (p *probeFailure) Unwrap() error {
+	if len(p.attempts) == 0 {
+		return nil
+	}
+	return p.attempts[0].err
+}
+
+// probeDetail says why a probe failed, reason first.
+func probeDetail(err error) string {
+	var de *Error
+	if errors.As(err, &de) {
+		return de.Reason()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timed out — the orchestrator did not answer within the probe deadline"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "not finished — discovery ran out of time before this one answered"
+	}
+	return err.Error()
 }
 
 func (d *Discoverer) attempt(ctx context.Context, clusterID int, svc ServiceRef, path string, q url.Values) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, d.probeTimeout())
 	defer cancel()
 	return d.c.ServiceProxyGet(ctx, ScopeCluster, clusterID, svc, path, q)
+}
+
+func (d *Discoverer) probeTimeout() time.Duration {
+	if d.ProbeTimeout > 0 {
+		return d.ProbeTimeout
+	}
+	return DefaultDiscoveryProbeTimeout
 }
 
 // classify turns Service objects into ranked endpoint candidates. Ordering

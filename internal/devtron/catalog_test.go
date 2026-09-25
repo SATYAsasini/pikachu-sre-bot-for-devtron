@@ -1,8 +1,11 @@
 package devtron
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -240,5 +243,75 @@ func TestClustersSortsByName(t *testing.T) {
 	}
 	if len(got) != 3 || got[0].ClusterName != "alpha" || got[1].ClusterName != "zulu" {
 		t.Errorf("want a stable name order, got %v", []string{got[0].ClusterName, got[1].ClusterName, got[2].ClusterName})
+	}
+}
+
+// A probe's detail is read off a list row that clamps it to a line. Leading
+// with the request path — ninety characters of namespace and service name
+// for a proxy call — means the reader sees the path and none of the reason.
+func TestErrorReasonLeadsWithTheReason(t *testing.T) {
+	t.Parallel()
+
+	const proxyPath = "/orchestrator/k8s/proxy/cluster/80/api/v1/namespaces/monitoring/" +
+		"services/vmalert-victoria-metrics/proxy/api/v1/alerts"
+
+	tests := []struct {
+		name   string
+		err    *Error
+		prefix string
+		says   string
+	}{
+		{"forbidden names the permission", &Error{Status: 403, Path: proxyPath}, "HTTP 403", "Kubernetes Resources"},
+		{"unauthorized is the same class", &Error{Status: 401, Path: proxyPath}, "HTTP 401", "Kubernetes Resources"},
+		{"not found is not a permission problem", &Error{Status: 404, Path: proxyPath}, "HTTP 404", "no such Service"},
+		{"503 points at the port", &Error{Status: 503, Path: proxyPath, Body: "<html>503</html>"}, "HTTP 503", "port"},
+		{"500 blames the orchestrator", &Error{Status: 500, Path: proxyPath}, "HTTP 500", "orchestrator"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.err.Reason()
+			if !strings.HasPrefix(got, tt.prefix) {
+				t.Errorf("want it to open with %q, got %q", tt.prefix, got)
+			}
+			if !strings.Contains(got, tt.says) {
+				t.Errorf("want it to mention %q, got %q", tt.says, got)
+			}
+			if strings.Contains(got, "/orchestrator/") {
+				t.Errorf("the path belongs in the tooltip, not the first line: %q", got)
+			}
+			// Short enough to survive a clamped row.
+			if len(got) > 220 {
+				t.Errorf("reason is %d chars, too long for a list row: %q", len(got), got)
+			}
+		})
+	}
+}
+
+// An unrecognised status still has to say something useful.
+func TestErrorReasonFallsBackToTheBody(t *testing.T) {
+	t.Parallel()
+
+	got := (&Error{Status: 418, Path: "/x", Body: "short and pot-shaped"}).Reason()
+	if !strings.Contains(got, "418") || !strings.Contains(got, "pot-shaped") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestProbeDetailClassifiesNonHTTPFailures(t *testing.T) {
+	t.Parallel()
+
+	if got := probeDetail(context.DeadlineExceeded); !strings.Contains(got, "timed out") {
+		t.Errorf("got %q", got)
+	}
+	if got := probeDetail(context.Canceled); !strings.Contains(got, "ran out of time") {
+		t.Errorf("got %q", got)
+	}
+	if got := probeDetail(&Error{Status: 403, Path: "/x"}); !strings.HasPrefix(got, "HTTP 403") {
+		t.Errorf("an HTTP error should use Reason, got %q", got)
+	}
+	if got := probeDetail(errors.New("dial tcp: no route to host")); got != "dial tcp: no route to host" {
+		t.Errorf("an unknown error passes through, got %q", got)
 	}
 }

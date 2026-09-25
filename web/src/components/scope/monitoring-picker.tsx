@@ -352,7 +352,7 @@ function CandidateRow({
       </span>
       <Mono className="mt-0.5" value={svc} title="Discovered service" />
       {endpoint.detail ? (
-        <Mono className="mt-0.5 text-bad" value={endpoint.detail} title="Why it did not answer" />
+        <span className="mt-0.5 block text-[0.6875rem] leading-relaxed text-bad">{endpoint.detail}</span>
       ) : null}
     </Row>
   )

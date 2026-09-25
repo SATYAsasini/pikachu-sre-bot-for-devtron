@@ -2,6 +2,7 @@ package devtron
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -690,5 +691,65 @@ func TestFullProbeMeasuresAlternativesEvenWhenPinned(t *testing.T) {
 	// And the pin is measured once, not once per pass.
 	if n := f.probed("monitoring", "vmalertmanager-victoria-metrics"); n != 1 {
 		t.Errorf("the pinned endpoint was probed %d times, want 1", n)
+	}
+}
+
+// Cutting the per-attempt timeout to 4s to make walks finish sooner broke
+// discovery on installs where the proxy hop genuinely takes longer than
+// that. The default has to clear a slow orchestrator, and be raisable.
+func TestProbeTimeoutIsGenerousAndOverridable(t *testing.T) {
+	t.Parallel()
+
+	d := NewDiscoverer(nil, time.Minute)
+	if d.probeTimeout() != DefaultDiscoveryProbeTimeout {
+		t.Errorf("unset should use the default, got %v", d.probeTimeout())
+	}
+	if DefaultDiscoveryProbeTimeout < 10*time.Second {
+		t.Errorf("a service proxy hop needs room; default is %v", DefaultDiscoveryProbeTimeout)
+	}
+	d.ProbeTimeout = 30 * time.Second
+	if d.probeTimeout() != 30*time.Second {
+		t.Errorf("override ignored, got %v", d.probeTimeout())
+	}
+	d.ProbeTimeout = -1
+	if d.probeTimeout() != DefaultDiscoveryProbeTimeout {
+		t.Errorf("a nonsense override should fall back, got %v", d.probeTimeout())
+	}
+}
+
+// A candidate is tried portless and then on its ports. Reporting only the
+// first failure meant a fast rejection of the portless target hid a timeout
+// on the port that mattered.
+func TestProbeFailureReportsEveryAttempt(t *testing.T) {
+	t.Parallel()
+
+	mixed := &probeFailure{attempts: []attemptFailure{
+		{port: "", err: &Error{Status: 503, Path: "/x"}},
+		{port: "8429", err: context.DeadlineExceeded},
+	}}
+	got := mixed.Error()
+	if !strings.Contains(got, "no port") || !strings.Contains(got, ":8429") {
+		t.Errorf("want both targets named, got %q", got)
+	}
+	if !strings.Contains(got, "503") || !strings.Contains(got, "timed out") {
+		t.Errorf("want both reasons, got %q", got)
+	}
+
+	// All failing the same way is said once, not three times.
+	same := &probeFailure{attempts: []attemptFailure{
+		{port: "", err: &Error{Status: 403, Path: "/x"}},
+		{port: "9093", err: &Error{Status: 403, Path: "/x"}},
+	}}
+	if n := strings.Count(same.Error(), "HTTP 403"); n != 1 {
+		t.Errorf("one shared reason should be stated once, got %d in %q", n, same.Error())
+	}
+
+	if got := (&probeFailure{}).Error(); got == "" {
+		t.Error("an empty failure still has to say something")
+	}
+	// It still unwraps to a *Error so callers can classify it.
+	var de *Error
+	if !errors.As(mixed, &de) || de.Status != 503 {
+		t.Errorf("want the first HTTP error reachable through Unwrap, got %v", de)
 	}
 }

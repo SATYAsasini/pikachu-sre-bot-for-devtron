@@ -131,6 +131,28 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("devtron %s: HTTP %d: %s", e.Path, e.Status, e.Body)
 }
 
+// Reason is the short human form: what went wrong, not where.
+//
+// Error() leads with the request path, and for a Kubernetes service proxy
+// call that is ninety characters of namespace and service name before the
+// first word that explains anything. Anywhere the text is clamped to a line —
+// which is every list row that shows it — the reader gets the path and none
+// of the reason. A probe records this instead, and keeps the full error for
+// the tooltip.
+func (e *Error) Reason() string {
+	switch {
+	case e.Unauthorized():
+		return fmt.Sprintf("HTTP %d — Devtron refused this read. The token needs Kubernetes Resources → View on this cluster; reaching a named port also needs Resource name \"All resources\".", e.Status)
+	case e.Status == http.StatusNotFound:
+		return "HTTP 404 — no such Service in that namespace, or the proxy rejected the path."
+	case e.Status == http.StatusServiceUnavailable:
+		return "HTTP 503 — the orchestrator accepted the request but the Service did not answer. Usually the wrong port, or nothing serving HTTP on it."
+	case e.Status >= 500:
+		return fmt.Sprintf("HTTP %d — the orchestrator failed while serving this.", e.Status)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.Status, Truncate(e.Body, 160))
+}
+
 // Unauthorized reports a token problem rather than a missing object.
 func (e *Error) Unauthorized() bool {
 	return e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden

@@ -144,7 +144,9 @@ function EndpointRow({
         value={`${endpoint.service.namespace}/${endpoint.service.name}${endpoint.service.port ? `:${endpoint.service.port}` : ''}${endpoint.apiBase}`}
         title="Discovered service"
       />
-      {endpoint.detail ? <Mono className="w-full text-bad" value={endpoint.detail} title="Why it failed" /> : null}
+      {endpoint.detail ? (
+        <span className="w-full text-[0.6875rem] leading-relaxed text-bad">{endpoint.detail}</span>
+      ) : null}
     </div>
   )
 }

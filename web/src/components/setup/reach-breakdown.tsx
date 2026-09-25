@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Loader2, RotateCw } from 'lucide-react'
 import { cn } from 'cn'
 import { Button } from '@/components/ui/button'
@@ -132,7 +133,9 @@ export function ReachBreakdown({ rows, running }: { rows: Cluster[]; running: bo
  */
 function ClusterLine({ cluster }: { cluster: Cluster }) {
   const probe = useProbeCluster()
+  const [open, setOpen] = useState(false)
   const namespaces = cluster.namespaces ?? []
+  const steps = cluster.steps ?? []
 
   return (
     <li className="px-2.5 py-1">
@@ -148,6 +151,16 @@ function ClusterLine({ cluster }: { cluster: Cluster }) {
         ) : (
           <span className="tabular shrink-0 text-[0.625rem] text-muted-foreground">{cluster.latencyMs ?? 0}ms</span>
         )}
+        {steps.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="shrink-0 text-[0.625rem] text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+          >
+            {open ? 'hide' : 'why'}
+          </button>
+        ) : null}
         {cluster.investigable ? null : (
           <Button
             size="xs"
@@ -184,6 +197,24 @@ function ClusterLine({ cluster }: { cluster: Cluster }) {
 
       {cluster.detail && !cluster.investigable && (
         <p className="mt-0.5 text-[0.625rem] leading-relaxed text-bad">{cluster.detail}</p>
+      )}
+
+      {/* Exactly what was asked and what came back. The verdict says what;
+          this says why, which is the part somebody has to act on. */}
+      {open && steps.length > 0 && (
+        <ol className="mt-1 space-y-1 border-l border-border pl-2">
+          {steps.map((st, i) => (
+            <li key={i} className="text-[0.625rem] leading-relaxed">
+              <span className="font-medium">{st.ask}</span>
+              {st.path ? <span className="ml-1 font-mono text-muted-foreground">{st.path}</span> : null}
+              <span className="ml-1 text-muted-foreground">
+                → {st.outcome}
+                {typeof st.latencyMs === 'number' && st.latencyMs > 0 ? ` in ${st.latencyMs}ms` : ''}
+              </span>
+              {st.detail ? <div className="text-bad">{st.detail}</div> : null}
+            </li>
+          ))}
+        </ol>
       )}
     </li>
   )

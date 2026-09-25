@@ -72,6 +72,17 @@ export interface Cluster {
   namespaces?: string[] | null
   /** The verdict is Devtron's own connection status, not something measured. */
   fromDevtron?: boolean
+  /** What was asked to reach the verdict, in order. */
+  steps?: ProbeStep[] | null
+}
+
+/** One question put to a cluster during the reach check, and its answer. */
+export interface ProbeStep {
+  ask: string
+  path?: string
+  outcome: string
+  detail?: string
+  latencyMs?: number
 }
 
 /** One Kubernetes kind, and whether this token may read it. */

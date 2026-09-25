@@ -37,10 +37,11 @@ func (s *Store) SaveCapabilities(ctx context.Context, caps []devtron.Capability)
 	for _, c := range caps {
 		kinds, _ := json.Marshal(c.Kinds)
 		namespaces, _ := json.Marshal(c.Namespaces)
+		steps, _ := json.Marshal(c.Steps)
 		if _, err := tx.Exec(ctx, `
 			insert into cluster_capabilities
-				(cluster_id, cluster_name, reach, detail, latency_ms, kinds, namespaces, from_devtron, probed_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				(cluster_id, cluster_name, reach, detail, latency_ms, kinds, namespaces, steps, from_devtron, probed_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			on conflict (cluster_id) do update set
 				cluster_name = excluded.cluster_name,
 				reach        = excluded.reach,
@@ -48,10 +49,11 @@ func (s *Store) SaveCapabilities(ctx context.Context, caps []devtron.Capability)
 				latency_ms   = excluded.latency_ms,
 				kinds        = excluded.kinds,
 				namespaces   = excluded.namespaces,
+				steps        = excluded.steps,
 				from_devtron = excluded.from_devtron,
 				probed_at    = excluded.probed_at`,
 			c.ClusterID, c.ClusterName, string(c.Reach), c.Detail, c.LatencyMs,
-			kinds, namespaces, c.FromDevtron, c.ProbedAt,
+			kinds, namespaces, steps, c.FromDevtron, c.ProbedAt,
 		); err != nil {
 			return err
 		}
@@ -63,7 +65,8 @@ func (s *Store) SaveCapabilities(ctx context.Context, caps []devtron.Capability)
 func (s *Store) LoadCapabilities(ctx context.Context) ([]devtron.Capability, error) {
 	rows, err := s.pool.Query(ctx, `
 		select cluster_id, cluster_name, reach, detail, latency_ms, kinds,
-		       coalesce(namespaces, 'null'::jsonb), from_devtron, probed_at
+		       coalesce(namespaces, 'null'::jsonb), coalesce(steps, 'null'::jsonb),
+		       from_devtron, probed_at
 		from cluster_capabilities`)
 	if err != nil {
 		return nil, err
@@ -77,14 +80,16 @@ func (s *Store) LoadCapabilities(ctx context.Context) ([]devtron.Capability, err
 			reach      string
 			kinds      []byte
 			namespaces []byte
+			steps      []byte
 		)
 		if err := rows.Scan(&c.ClusterID, &c.ClusterName, &reach, &c.Detail, &c.LatencyMs,
-			&kinds, &namespaces, &c.FromDevtron, &c.ProbedAt); err != nil {
+			&kinds, &namespaces, &steps, &c.FromDevtron, &c.ProbedAt); err != nil {
 			return nil, err
 		}
 		c.Reach = devtron.Reach(reach)
 		_ = json.Unmarshal(kinds, &c.Kinds)
 		_ = json.Unmarshal(namespaces, &c.Namespaces)
+		_ = json.Unmarshal(steps, &c.Steps)
 		out = append(out, c)
 	}
 	return out, rows.Err()

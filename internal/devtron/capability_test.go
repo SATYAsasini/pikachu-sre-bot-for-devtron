@@ -233,10 +233,11 @@ func TestNamespaceScopedTokenIsUsable(t *testing.T) {
 	if cap.Reach != ReachUsable {
 		t.Fatalf("want usable, got %s (%s)", cap.Reach, cap.Detail)
 	}
-	if !strings.Contains(cap.Detail, "not across all of them") {
+	if !strings.Contains(cap.Detail, "devtroncd") || !strings.Contains(cap.Detail, "not across all namespaces") {
 		t.Errorf("it must say the read was scoped, got %q", cap.Detail)
 	}
-	// Two requests: the cluster-wide list, then one inside a namespace.
+	// The cluster-wide list, then namespaces until one yields. devtroncd is
+	// first and has pods, so two.
 	if n := f.kindProbes(); n != 2 {
 		t.Errorf("want two requests, got %d", n)
 	}
@@ -331,5 +332,68 @@ func TestKindsMeasuresEveryKind(t *testing.T) {
 	}
 	if counts["Pod"] != 3 || counts["Node"] != 1 {
 		t.Errorf("counts did not come through: %v", counts)
+	}
+}
+
+// Answering is not enough. A cluster where every read succeeds and returns
+// nothing produces an investigation that concludes nothing, which is the
+// outcome this measurement exists to keep out of the picker. It was briefly
+// reported usable, and the probe record is what made that visible.
+func TestEverythingEmptyIsNotUsable(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{ListKinds: map[string]int{}})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "idle", []string{"one", "two"})
+	if cap.Reach == ReachUsable {
+		t.Fatalf("nothing came back anywhere; not usable: %+v", cap)
+	}
+	if cap.Reach != ReachEmpty {
+		t.Errorf("want empty, got %s", cap.Reach)
+	}
+	// Both namespaces tried before concluding: one empty namespace is not
+	// evidence that a cluster is idle.
+	if n := f.kindProbes(); n != 3 {
+		t.Errorf("want the cluster-wide read plus both namespaces, got %d", n)
+	}
+	if !strings.Contains(cap.Detail, "one, two") {
+		t.Errorf("it must say where it looked, got %q", cap.Detail)
+	}
+}
+
+// Every step is recorded, so "what did you ask and what did it say" is
+// answerable from the row rather than from the source.
+func TestProbeRecordsWhatItAsked(t *testing.T) {
+	t.Parallel()
+
+	f, c := newFakeDevtron(fakeOpts{
+		ListKinds:     map[string]int{},
+		NamespacePods: map[string]int{"devtroncd": 4},
+	})
+	defer f.Close()
+	p := &Prober{c: c, Timeout: time.Second, Concurrency: 4, MaxInFlight: 4}
+
+	cap := p.Probe(t.Context(), 1, "scoped", []string{"devtroncd"})
+	if len(cap.Steps) != 2 {
+		t.Fatalf("want a step per question, got %d: %+v", len(cap.Steps), cap.Steps)
+	}
+	if !strings.Contains(cap.Steps[0].Ask, "Namespace") || cap.Steps[0].Outcome != "answered with nothing" {
+		t.Errorf("first step: %+v", cap.Steps[0])
+	}
+	if !strings.Contains(cap.Steps[1].Ask, "devtroncd") || cap.Steps[1].Outcome != "answered with 4" {
+		t.Errorf("second step: %+v", cap.Steps[1])
+	}
+	for i, st := range cap.Steps {
+		if st.Path == "" {
+			t.Errorf("step %d must name the endpoint so it can be repeated by hand", i)
+		}
+	}
+
+	// A verdict taken from Devtron records that too, with no request.
+	d := FromDevtronStatus(Cluster{ID: 2, ClusterName: "x", ErrorInCx: "i/o timeout"})
+	if len(d.Steps) != 1 || d.Steps[0].Outcome != "Devtron reports it cannot connect" {
+		t.Errorf("devtron verdict steps: %+v", d.Steps)
 	}
 }

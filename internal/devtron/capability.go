@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -64,6 +65,28 @@ func (r Reach) Why() string {
 	return "Not probed yet."
 }
 
+// ProbeStep is one question put to a cluster and what came back.
+//
+// The verdict alone is not enough to act on. "usable, readable in the
+// namespaces Devtron maps to this cluster" is true, but it does not say
+// whether the cluster-wide read was refused or merely returned nothing —
+// and those call for completely different fixes. The steps are kept so the
+// answer to "what did you ask, and what did it say" does not have to be
+// reconstructed from source.
+type ProbeStep struct {
+	// Ask is the question in words: "list Namespaces across the cluster".
+	Ask string `json:"ask"`
+	// Path is the orchestrator endpoint, so it can be repeated by hand.
+	Path string `json:"path"`
+	// Outcome is the short verdict for this step alone.
+	Outcome   string `json:"outcome"`
+	Detail    string `json:"detail,omitempty"`
+	LatencyMs int64  `json:"latencyMs"`
+}
+
+// resourceListPath is the one endpoint every capability probe uses.
+const resourceListPath = "POST /orchestrator/k8s/resource/list"
+
 // KindAccess is what one Kubernetes kind yielded.
 type KindAccess struct {
 	Kind    string `json:"kind"`
@@ -87,6 +110,8 @@ type Capability struct {
 	// answer the cheap check produces along the way. Empty means the
 	// question was never reached, not that there are none.
 	Namespaces []string `json:"namespaces,omitempty"`
+	// Steps is what was asked to reach this verdict, in order.
+	Steps []ProbeStep `json:"steps,omitempty"`
 	// FromDevtron marks a verdict taken from Devtron's own connection status
 	// rather than measured. Devtron already knows it cannot reach a cluster
 	// and says so in the list; spending twenty seconds proving it again is
@@ -224,6 +249,7 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 
 	list := p.probeKind(ctx, clusterID, GVKNamespace, "")
 	measured.LatencyMs = time.Since(started).Milliseconds()
+	measured.Steps = append(measured.Steps, list.step(""))
 
 	// It did not answer at all. Nothing else is worth asking.
 	if list.reach == ReachUnreachable || list.reach == ReachError {
@@ -241,8 +267,13 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 	// and in both cases the cluster-wide question was the wrong one. If
 	// Devtron knows namespaces for this cluster, ask inside one of them
 	// instead: that is the read the agent would actually perform.
-	ns := limitNamespaces(fallback, 1)
+	ns := limitNamespaces(fallback, maxProbeNamespaces)
 	if len(ns) == 0 {
+		measured.Steps = append(measured.Steps, ProbeStep{
+			Ask:     "look inside a namespace instead",
+			Outcome: "skipped",
+			Detail:  "Devtron maps no environments to this cluster, so there was nowhere narrower to ask",
+		})
 		if list.reach == ReachForbidden {
 			measured.Reach, measured.Detail = ReachForbidden, list.access.Detail
 		} else {
@@ -251,19 +282,47 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, f
 		return measured
 	}
 
-	scoped := p.probeKind(ctx, clusterID, GVKPod, ns[0])
-	switch {
-	case scoped.access.Allowed:
-		// Answering at all is the point, even with nothing in it: the token
-		// can read this cluster, just not across it.
-		measured.Reach = ReachUsable
-		measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
-		measured.Detail = "readable in the namespaces Devtron maps to this cluster, not across all of them"
-	case scoped.reach == ReachForbidden:
-		measured.Reach, measured.Detail = ReachForbidden, scoped.access.Detail
-	default:
-		measured.Reach, measured.Detail = scoped.reach, scoped.access.Detail
+	// Ask in each of them until one yields something. Answering is not
+	// enough on its own: a cluster where every read succeeds and returns
+	// nothing produces an investigation that concludes nothing, which is the
+	// exact outcome this whole measurement exists to keep out of the picker.
+	// One empty namespace is also not evidence the cluster is idle, so the
+	// others are tried before saying so.
+	var refused bool
+	for _, n := range ns {
+		scoped := p.probeKind(ctx, clusterID, GVKPod, n)
+		measured.Steps = append(measured.Steps, scoped.step(n))
+
+		if scoped.access.Allowed && scoped.access.Count > 0 {
+			measured.Reach = ReachUsable
+			measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
+			measured.Detail = "readable in " + n + ", not across all namespaces"
+			measured.LatencyMs = time.Since(started).Milliseconds()
+			return measured
+		}
+		switch {
+		case scoped.access.Allowed:
+			// Answered, empty. Keep looking.
+		case scoped.reach == ReachForbidden:
+			refused = true
+		default:
+			// Could not be reached at all; that outranks anything else.
+			measured.Reach, measured.Detail = scoped.reach, scoped.access.Detail
+			measured.LatencyMs = time.Since(started).Milliseconds()
+			return measured
+		}
 	}
+
+	measured.LatencyMs = time.Since(started).Milliseconds()
+	measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
+	if refused {
+		measured.Reach = ReachForbidden
+		measured.Detail = "the token was refused in every namespace Devtron maps to this cluster"
+		return measured
+	}
+	measured.Reach = ReachEmpty
+	measured.Detail = "every read answered and every one was empty, cluster-wide and in " +
+		strings.Join(ns, ", ")
 	return measured
 }
 
@@ -282,6 +341,34 @@ type kindProbe struct {
 	// namespaces is filled only when the kind was Namespace, because that is
 	// the one list whose contents are themselves the answer.
 	namespaces []string
+	latencyMs  int64
+}
+
+// step renders this probe as a line in the record.
+func (k kindProbe) step(namespace string) ProbeStep {
+	where := "across the cluster"
+	if namespace != "" {
+		where = "in namespace " + namespace
+	}
+	st := ProbeStep{
+		Ask:       "list " + k.access.Kind + "s " + where,
+		Path:      resourceListPath,
+		LatencyMs: k.latencyMs,
+		Detail:    k.access.Detail,
+	}
+	switch {
+	case k.access.Allowed && k.access.Count > 0:
+		st.Outcome = fmt.Sprintf("answered with %d", k.access.Count)
+	case k.access.Allowed:
+		st.Outcome = "answered with nothing"
+	case k.reach == ReachForbidden:
+		st.Outcome = "refused"
+	case k.reach == ReachUnreachable:
+		st.Outcome = "no answer before the deadline"
+	default:
+		st.Outcome = "failed"
+	}
+	return st
 }
 
 // maxNamespacesShown caps what is carried on a capability row. A cluster with
@@ -290,10 +377,11 @@ const maxNamespacesShown = 50
 
 // probeKind asks one kind, in one namespace ("" for every namespace).
 func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespace string) kindProbe {
+	started := time.Now()
 	release, ok := p.acquire(ctx)
 	if !ok {
 		access := KindAccess{Kind: gvk.Kind, Detail: string(ReachUnknown) + ": not reached before the sweep ended"}
-		return kindProbe{access: access, reach: ReachUnknown}
+		return kindProbe{access: access, reach: ReachUnknown, latencyMs: time.Since(started).Milliseconds()}
 	}
 	defer release()
 
@@ -308,11 +396,11 @@ func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespac
 		reach, detail := classifyProbeError(kctx, err)
 		access.Allowed = false
 		access.Detail = string(reach) + ": " + detail
-		return kindProbe{access: access, reach: reach}
+		return kindProbe{access: access, reach: reach, latencyMs: time.Since(started).Milliseconds()}
 	}
 	access.Allowed = true
 	access.Count = list.Len()
-	out := kindProbe{access: access, reach: ReachUsable}
+	out := kindProbe{access: access, reach: ReachUsable, latencyMs: time.Since(started).Milliseconds()}
 	if gvk.Kind == GVKNamespace.Kind {
 		out.namespaces = namesOf(list.Objects, maxNamespacesShown)
 	}
@@ -470,6 +558,12 @@ func FromDevtronStatus(c Cluster) Capability {
 		ClusterID: c.ID, ClusterName: c.ClusterName,
 		Reach: ReachUnreachable, Detail: c.ErrorInCx,
 		ProbedAt: time.Now().UTC(), FromDevtron: true,
+		Steps: []ProbeStep{{
+			Ask:     "read Devtron's own connection status for this cluster",
+			Path:    "GET /orchestrator/cluster/autocomplete",
+			Outcome: "Devtron reports it cannot connect",
+			Detail:  c.ErrorInCx,
+		}},
 	}
 }
 

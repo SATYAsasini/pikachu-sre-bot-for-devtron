@@ -216,6 +216,11 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 			if len(measured.Namespaces) > 0 {
 				row["namespaces"] = measured.Namespaces
 			}
+			if len(measured.Steps) > 0 {
+				// What was asked to get this verdict, so the screen can say
+				// why rather than only what.
+				row["steps"] = measured.Steps
+			}
 			if measured.FromDevtron {
 				// Not measured: Devtron's own answer, taken on trust.
 				row["fromDevtron"] = true

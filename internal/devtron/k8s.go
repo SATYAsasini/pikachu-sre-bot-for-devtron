@@ -22,6 +22,7 @@ var (
 	GVKEvent       = GVK{Group: "", Version: "v1", Kind: "Event"}
 	GVKConfigMap   = GVK{Group: "", Version: "v1", Kind: "ConfigMap"}
 	GVKNode        = GVK{Group: "", Version: "v1", Kind: "Node"}
+	GVKNamespace   = GVK{Group: "", Version: "v1", Kind: "Namespace"}
 	GVKPVC         = GVK{Group: "", Version: "v1", Kind: "PersistentVolumeClaim"}
 	GVKDeployment  = GVK{Group: "apps", Version: "v1", Kind: "Deployment"}
 	GVKStatefulSet = GVK{Group: "apps", Version: "v1", Kind: "StatefulSet"}

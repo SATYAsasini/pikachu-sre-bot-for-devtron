@@ -1,6 +1,9 @@
+import { Loader2, RotateCw } from 'lucide-react'
 import { cn } from 'cn'
+import { Button } from '@/components/ui/button'
 import { Chip, type Tone } from '@/components/common/status'
 import { Text } from '@/components/common/text'
+import { useProbeCluster } from '@/lib/queries'
 import type { Cluster, Reach } from '@/lib/types'
 
 /**
@@ -57,8 +60,8 @@ const MEANING: Record<Reach, { what: string; why: string }> = {
     why: 'Its own error, usually HTTP 500 — returned fast, so nothing was waited on. Check the orchestrator logs for these cluster ids.',
   },
   unreachable: {
-    what: 'The orchestrator could not reach them before the deadline.',
-    why: 'Nothing to do with the token — the credentials Devtron holds for these clusters no longer work, or the clusters are gone. Raise SRE_RUN_PROBE_TIMEOUT_SECONDS if you believe they are merely slow.',
+    what: 'Devtron cannot connect to them.',
+    why: 'Nothing to do with the token — the credentials Devtron holds for these clusters no longer work, or the clusters are gone. Most of these are Devtron\'s own verdict, taken without spending a request; if you have just fixed one, probe it and see.',
   },
   unknown: {
     what: 'Not measured yet.',
@@ -118,6 +121,74 @@ export function ReachBreakdown({ rows, running }: { rows: Cluster[]; running: bo
   )
 }
 
+/**
+ * One cluster, with what is known about it and a way to disagree.
+ *
+ * A verdict taken from Devtron rather than measured says so, because the two
+ * are different claims: one is a cached opinion held by another service, the
+ * other is a read we performed. The operator who has just repaired a cluster
+ * is the person best placed to know the first is stale, so they get a button
+ * rather than a wait.
+ */
+function ClusterLine({ cluster }: { cluster: Cluster }) {
+  const probe = useProbeCluster()
+  const namespaces = cluster.namespaces ?? []
+
+  return (
+    <li className="px-2.5 py-1">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{cluster.clusterName}</span>
+        {cluster.fromDevtron ? (
+          <span
+            className="shrink-0 text-[0.625rem] text-muted-foreground"
+            title="Devtron's own connection status. No request was spent on this."
+          >
+            per Devtron
+          </span>
+        ) : (
+          <span className="tabular shrink-0 text-[0.625rem] text-muted-foreground">{cluster.latencyMs ?? 0}ms</span>
+        )}
+        {cluster.investigable ? null : (
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={probe.isPending}
+            onClick={() => probe.mutate(cluster.id)}
+            title="Measure this cluster now, whatever Devtron thinks"
+          >
+            {probe.isPending ? (
+              <Loader2 aria-hidden className="size-3 animate-spin" />
+            ) : (
+              <RotateCw aria-hidden className="size-3" />
+            )}
+            Probe
+          </Button>
+        )}
+      </div>
+
+      {namespaces.length > 0 && (
+        <div className="mt-0.5 flex flex-wrap items-center gap-1">
+          <span className="text-[0.625rem] text-muted-foreground">
+            {namespaces.length} namespace{namespaces.length === 1 ? '' : 's'}:
+          </span>
+          {namespaces.slice(0, 6).map((n) => (
+            <span key={n} className="rounded border border-border/70 bg-well px-1 font-mono text-[0.625rem]">
+              {n}
+            </span>
+          ))}
+          {namespaces.length > 6 && (
+            <span className="text-[0.625rem] text-muted-foreground">+{namespaces.length - 6}</span>
+          )}
+        </div>
+      )}
+
+      {cluster.detail && !cluster.investigable && (
+        <p className="mt-0.5 text-[0.625rem] leading-relaxed text-bad">{cluster.detail}</p>
+      )}
+    </li>
+  )
+}
+
 function ReachGroup({ reach, clusters }: { reach: Reach; clusters: Cluster[] }) {
   const meaning = MEANING[reach]
   // The slowest one is the interesting one in a timeout group, and the
@@ -138,24 +209,15 @@ function ReachGroup({ reach, clusters }: { reach: Reach; clusters: Cluster[] }) 
         {meaning.why}
       </p>
 
-      {reasons.length > 0 && (
-        <ul className="space-y-0.5 border-b border-border px-2.5 py-1.5">
-          {reasons.slice(0, 3).map((r) => (
-            <li key={r} className="font-mono text-[0.625rem] leading-relaxed text-bad">
-              {r}
-            </li>
-          ))}
-        </ul>
+      {reasons.length === 1 && (
+        <p className="border-b border-border px-2.5 py-1.5 font-mono text-[0.625rem] leading-relaxed text-bad">
+          {reasons[0]}
+        </p>
       )}
 
-      <ul data-lenis-prevent className="max-h-48 divide-y divide-border overflow-y-auto">
+      <ul data-lenis-prevent className="max-h-56 divide-y divide-border overflow-y-auto">
         {sorted.map((c) => (
-          <li key={c.id} className="flex items-center gap-2 px-2.5 py-1">
-            <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{c.clusterName}</span>
-            <span className="tabular shrink-0 text-[0.625rem] text-muted-foreground">
-              {c.reach === undefined ? '—' : `${c.latencyMs ?? 0}ms`}
-            </span>
-          </li>
+          <ClusterLine key={c.id} cluster={c} />
         ))}
       </ul>
     </section>

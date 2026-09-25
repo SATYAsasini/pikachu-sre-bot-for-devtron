@@ -12,6 +12,7 @@ package capability
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -215,7 +216,7 @@ func (s *Service) Refresh(ctx context.Context) ([]devtron.Capability, error) {
 
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), SweepBudget)
 		defer cancel()
-		return s.sweep(bg)
+		return s.sweep(bg, nil)
 	})
 
 	select {
@@ -229,7 +230,7 @@ func (s *Service) Refresh(ctx context.Context) ([]devtron.Capability, error) {
 	}
 }
 
-func (s *Service) sweep(ctx context.Context) ([]devtron.Capability, error) {
+func (s *Service) sweep(ctx context.Context, force map[int]bool) ([]devtron.Capability, error) {
 	clusters, err := s.dc.Clusters(ctx)
 	if err != nil {
 		return nil, err
@@ -248,9 +249,12 @@ func (s *Service) sweep(ctx context.Context) ([]devtron.Capability, error) {
 	// Published as they land. A sweep of a large install takes long enough
 	// that holding every answer back until the last cluster has timed out
 	// makes the whole thing look hung.
-	caps := s.prober.ProbeAll(ctx, clusters, func(c devtron.Capability) {
-		s.putOne(c)
-		s.probed.Add(1)
+	caps := s.prober.ProbeAll(ctx, clusters, devtron.SweepOptions{
+		OnResult: func(c devtron.Capability) {
+			s.putOne(c)
+			s.probed.Add(1)
+		},
+		Force: force,
 	})
 
 	// And replaced at the end, which is what prunes the clusters Devtron no
@@ -269,6 +273,40 @@ func (s *Service) sweep(ctx context.Context) ([]devtron.Capability, error) {
 	s.log.Info("cluster capability sweep",
 		"clusters", len(caps), "usable", usable, "took", time.Since(started).Round(time.Millisecond))
 	return caps, nil
+}
+
+// ProbeOne measures a single cluster, whatever Devtron's connection status
+// says about it.
+//
+// Devtron's status is trusted by default because it has been right every
+// time it was checked, but it is still a cached opinion held by another
+// service. An operator who has just fixed a cluster should not have to wait
+// for Devtron to notice before this one will look.
+func (s *Service) ProbeOne(ctx context.Context, clusterID int) (devtron.Capability, error) {
+	clusters, err := s.dc.Clusters(ctx)
+	if err != nil {
+		return devtron.Capability{}, err
+	}
+	for _, c := range clusters {
+		if c.ID != clusterID {
+			continue
+		}
+		var namespaces []string
+		if envs, err := s.dc.EnvironmentsInCluster(ctx, clusterID); err == nil {
+			for _, e := range envs {
+				if e.Namespace != "" {
+					namespaces = append(namespaces, e.Namespace)
+				}
+			}
+		}
+		measured := s.prober.Probe(ctx, c.ID, c.ClusterName, namespaces)
+		s.putOne(measured)
+		if err := s.store.SaveCapabilities(ctx, s.All()); err != nil {
+			s.log.Warn("could not persist the cluster capability", "cluster", clusterID, "err", err)
+		}
+		return measured, nil
+	}
+	return devtron.Capability{}, fmt.Errorf("devtron does not list a cluster with id %d", clusterID)
 }
 
 // RefreshInBackground sweeps without blocking a request, and does nothing

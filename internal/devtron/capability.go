@@ -80,9 +80,18 @@ type Capability struct {
 	Detail      string    `json:"detail,omitempty"`
 	LatencyMs   int64     `json:"latencyMs"`
 	ProbedAt    time.Time `json:"probedAt"`
-	// Kinds records which kinds answered. Only populated when the cluster is
-	// reachable; probing kinds on a dead cluster is 30 seconds of nothing.
+	// Kinds records which kinds answered. Only populated when something
+	// asked for them; the cheap reach check does not.
 	Kinds []KindAccess `json:"kinds,omitempty"`
+	// Namespaces is what this token can see in the cluster, which is the
+	// answer the cheap check produces along the way. Empty means the
+	// question was never reached, not that there are none.
+	Namespaces []string `json:"namespaces,omitempty"`
+	// FromDevtron marks a verdict taken from Devtron's own connection status
+	// rather than measured. Devtron already knows it cannot reach a cluster
+	// and says so in the list; spending twenty seconds proving it again is
+	// twenty seconds nobody gets back.
+	FromDevtron bool `json:"fromDevtron,omitempty"`
 }
 
 // AllowsKind reports whether a kind is worth attempting.
@@ -196,57 +205,73 @@ func (p *Prober) acquire(ctx context.Context) (func(), bool) {
 	}
 }
 
-// Probe measures one cluster: can we reach it, and which kinds answer.
+// Probe answers one question as cheaply as it can: will this cluster serve
+// this token, and what can it see?
 //
-// Every kind is asked at once and the verdict comes from all of them
-// together. It used to hinge on a single cluster-wide Pod list, which
-// answered two very different questions with the same empty array: "this
-// cluster has nothing running" and "this token may not list across all
-// namespaces". Clusters in the second case were reported empty and hidden
-// from the picker.
+// One request, not five. Listing Namespaces answers all of it at once —
+// whether the cluster responds, whether the token is allowed, and which
+// namespaces are visible — and the namespace list is a fact worth having
+// rather than a by-product. What the agent can read *inside* a namespace is
+// a different question, asked on the cluster's own page by Kinds, not as a
+// gate on whether the cluster may be offered at all.
 //
-// namespaces are the ones Devtron says this cluster has, used only when the
-// cluster-wide read came back with nothing at all.
-func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, namespaces []string) Capability {
+// fallback are the namespaces Devtron says this cluster has, used when the
+// cluster-scoped Namespace list is refused — which is the ordinary state of
+// a token scoped to environments rather than to whole clusters.
+func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, fallback []string) Capability {
 	measured := Capability{ClusterID: clusterID, ClusterName: clusterName, ProbedAt: time.Now().UTC()}
 	started := time.Now()
 
-	// One cheap question first. Most clusters on a large install cannot be
-	// reached at all, and they say so on the first call — spending five on
-	// each of them tripled the sweep and put enough load on the orchestrator
-	// to make healthy clusters time out.
-	first := p.probeKind(ctx, clusterID, GVKPod, "")
+	list := p.probeKind(ctx, clusterID, GVKNamespace, "")
 	measured.LatencyMs = time.Since(started).Milliseconds()
-	if first.reach == ReachUnreachable || first.reach == ReachError {
-		measured.Kinds = []KindAccess{first.access}
-		measured.Reach, measured.Detail = reachFrom([]kindProbe{first})
+
+	// It did not answer at all. Nothing else is worth asking.
+	if list.reach == ReachUnreachable || list.reach == ReachError {
+		measured.Reach, measured.Detail = list.reach, list.access.Detail
 		return measured
 	}
 
-	// It answered something — even a refusal is an answer. Now ask the rest,
-	// because one kind cannot tell "nothing is running" from "this token
-	// cannot list across all namespaces", and being denied Pods says nothing
-	// about Services or Nodes.
-	probes := p.probeRest(ctx, clusterID, "", first)
-	measured.Kinds = accessOf(probes)
-	measured.Reach, measured.Detail = reachFrom(probes)
+	if list.access.Allowed && list.access.Count > 0 {
+		measured.Reach = ReachUsable
+		measured.Namespaces = list.namespaces
+		return measured
+	}
 
-	// Nothing came back, but the cluster answered. Before calling it empty,
-	// look where Devtron says this cluster actually has workloads: a token
-	// scoped to environments rather than to whole clusters reads nothing
-	// across all namespaces and plenty inside one.
-	if measured.Reach == ReachEmpty {
-		for _, ns := range limitNamespaces(namespaces, maxProbeNamespaces) {
-			scoped := p.probeKinds(ctx, clusterID, ns)
-			if r, _ := reachFrom(scoped); r == ReachUsable {
-				measured.Kinds = accessOf(scoped)
-				measured.Reach = ReachUsable
-				measured.Detail = "readable in namespace " + ns + ", not across all namespaces"
-				break
-			}
+	// Refused, or allowed but filtered down to nothing — indistinguishable,
+	// and in both cases the cluster-wide question was the wrong one. If
+	// Devtron knows namespaces for this cluster, ask inside one of them
+	// instead: that is the read the agent would actually perform.
+	ns := limitNamespaces(fallback, 1)
+	if len(ns) == 0 {
+		if list.reach == ReachForbidden {
+			measured.Reach, measured.Detail = ReachForbidden, list.access.Detail
+		} else {
+			measured.Reach = ReachEmpty
 		}
+		return measured
+	}
+
+	scoped := p.probeKind(ctx, clusterID, GVKPod, ns[0])
+	switch {
+	case scoped.access.Allowed:
+		// Answering at all is the point, even with nothing in it: the token
+		// can read this cluster, just not across it.
+		measured.Reach = ReachUsable
+		measured.Namespaces = limitNamespaces(fallback, maxNamespacesShown)
+		measured.Detail = "readable in the namespaces Devtron maps to this cluster, not across all of them"
+	case scoped.reach == ReachForbidden:
+		measured.Reach, measured.Detail = ReachForbidden, scoped.access.Detail
+	default:
+		measured.Reach, measured.Detail = scoped.reach, scoped.access.Detail
 	}
 	return measured
+}
+
+// Kinds measures what the token may read in one cluster, optionally inside
+// one namespace. This is the deep question, asked from the cluster's own
+// page rather than as a gate on the picker.
+func (p *Prober) Kinds(ctx context.Context, clusterID int, namespace string) []KindAccess {
+	return accessOf(p.probeKinds(ctx, clusterID, namespace))
 }
 
 // kindProbe is one kind's result, with the classification kept beside it so
@@ -254,7 +279,14 @@ func (p *Prober) Probe(ctx context.Context, clusterID int, clusterName string, n
 type kindProbe struct {
 	access KindAccess
 	reach  Reach
+	// namespaces is filled only when the kind was Namespace, because that is
+	// the one list whose contents are themselves the answer.
+	namespaces []string
 }
+
+// maxNamespacesShown caps what is carried on a capability row. A cluster with
+// four hundred namespaces does not need all of them on a setup screen.
+const maxNamespacesShown = 50
 
 // probeKind asks one kind, in one namespace ("" for every namespace).
 func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespace string) kindProbe {
@@ -280,7 +312,30 @@ func (p *Prober) probeKind(ctx context.Context, clusterID int, gvk GVK, namespac
 	}
 	access.Allowed = true
 	access.Count = list.Len()
-	return kindProbe{access: access, reach: ReachUsable}
+	out := kindProbe{access: access, reach: ReachUsable}
+	if gvk.Kind == GVKNamespace.Kind {
+		out.namespaces = namesOf(list.Objects, maxNamespacesShown)
+	}
+	return out
+}
+
+// namesOf pulls metadata.name out of a resource list.
+func namesOf(objects []map[string]any, limit int) []string {
+	out := make([]string, 0, min(len(objects), limit))
+	for _, o := range objects {
+		md, _ := o["metadata"].(map[string]any)
+		if md == nil {
+			continue
+		}
+		if n, _ := md["name"].(string); n != "" {
+			out = append(out, n)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // probeRest asks every kind except the one already measured, keeping the
@@ -389,12 +444,37 @@ func limitNamespaces(in []string, max int) []string {
 	return out
 }
 
-// ProbeAll sweeps every cluster, bounded by Concurrency.
+// SweepOptions configure one pass over every cluster.
+type SweepOptions struct {
+	// OnResult is called with each cluster's verdict the moment it is known,
+	// on the goroutine that produced it, so a caller can publish answers
+	// while the rest of the sweep is still running.
+	OnResult func(Capability)
+	// Force probes these clusters even when Devtron says it cannot connect
+	// to them. Devtron's status can be stale, and an operator who knows
+	// better should be able to say so.
+	Force map[int]bool
+}
+
+// FromDevtronStatus turns Devtron's own verdict on a cluster into a
+// capability, without spending a request on it.
 //
-// onResult is called with each cluster's verdict the moment it is known, on
-// the goroutine that measured it, so a caller can publish answers while the
-// rest of the sweep is still running. It may be nil.
-func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster, onResult func(Capability)) []Capability {
+// Devtron records why it cannot reach a cluster and hands that back in the
+// cluster list — "dial tcp 34.0.2.215:16443: i/o timeout", "connection not
+// setup for isolated clusters". Measured against a live install, that
+// agreed with the probe on all 25 clusters and disagreed on none, while the
+// probe spent 347 seconds establishing it. Its sentence is also more
+// specific than anything a timeout of ours can say.
+func FromDevtronStatus(c Cluster) Capability {
+	return Capability{
+		ClusterID: c.ID, ClusterName: c.ClusterName,
+		Reach: ReachUnreachable, Detail: c.ErrorInCx,
+		ProbedAt: time.Now().UTC(), FromDevtron: true,
+	}
+}
+
+// ProbeAll sweeps every cluster, bounded by MaxInFlight.
+func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster, opts SweepOptions) []Capability {
 	// Where each cluster keeps its workloads, fetched once for the whole
 	// sweep. Only used for the clusters whose cluster-wide read came back
 	// with nothing; a token scoped to environments has no other way to prove
@@ -421,10 +501,17 @@ func (p *Prober) ProbeAll(ctx context.Context, clusters []Cluster, onResult func
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			c := p.Probe(ctx, cl.ID, cl.ClusterName, byCluster[cl.ID])
+			// Devtron has already said it cannot connect. Believe it, unless
+			// somebody asked us not to.
+			var c Capability
+			if cl.ErrorInCx != "" && !opts.Force[cl.ID] {
+				c = FromDevtronStatus(cl)
+			} else {
+				c = p.Probe(ctx, cl.ID, cl.ClusterName, byCluster[cl.ID])
+			}
 			out[i] = c
-			if onResult != nil {
-				onResult(c)
+			if opts.OnResult != nil {
+				opts.OnResult(c)
 			}
 		}(i, cl)
 	}

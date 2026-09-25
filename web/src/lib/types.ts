@@ -68,6 +68,10 @@ export interface Cluster {
   investigable?: boolean
   /** An operator has pinned which monitoring endpoints this cluster uses. */
   monitoringPinned?: boolean
+  /** What this token can see in the cluster, from the reach check. */
+  namespaces?: string[] | null
+  /** The verdict is Devtron's own connection status, not something measured. */
+  fromDevtron?: boolean
 }
 
 /** How far the cluster capability sweep has got. */

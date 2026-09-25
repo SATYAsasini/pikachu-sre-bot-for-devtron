@@ -249,6 +249,10 @@ export const api = {
   /** Re-measures every cluster and returns the same rows as `clusters`. */
   sweepProgress: (): Promise<SweepProgress> => request<SweepProgress>('/clusters/sweep'),
 
+  /** Measure one cluster now, ignoring Devtron's own verdict on it. */
+  probeCluster: (clusterId: number): Promise<Cluster> =>
+    request<Cluster>(`/clusters/${clusterId}/probe`, { method: 'POST' }),
+
   /** Starts a sweep and returns what is known now; the rest lands as it is measured. */
   refreshClusters: async (): Promise<Cluster[]> =>
     isFixtureMode()

@@ -70,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 		// install, and a caller that cannot see progress cannot tell it apart
 		// from a hang.
 		r.Get("/clusters/sweep", s.sweepProgress)
+		// Measure one cluster now, ignoring Devtron's own verdict on it.
+		r.Post("/clusters/{clusterId}/probe", s.probeCluster)
 		r.Get("/clusters/{clusterId}/environments", s.listClusterEnvironments)
 		r.Get("/clusters/{clusterId}/monitoring", s.clusterMonitoring)
 		// Discovery picks by heuristic, and on a cluster running both vmalert
@@ -208,6 +210,13 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 			if measured.Detail != "" {
 				row["detail"] = measured.Detail
 			}
+			if len(measured.Namespaces) > 0 {
+				row["namespaces"] = measured.Namespaces
+			}
+			if measured.FromDevtron {
+				// Not measured: Devtron's own answer, taken on trust.
+				row["fromDevtron"] = true
+			}
 		}
 		out = append(out, row)
 	}
@@ -227,6 +236,27 @@ func (s *Server) writeClusterRows(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refreshClusters(w http.ResponseWriter, r *http.Request) {
 	s.Caps.RefreshInBackground(r.Context())
 	s.writeClusterRows(w, r)
+}
+
+// probeCluster measures one cluster on demand.
+//
+// Devtron's connection status is trusted by default — it has been right
+// every time it was checked, and believing it is what turns a three hundred
+// second sweep into a two second one. But it is still a cached opinion held
+// by another service, and somebody who has just fixed a cluster should not
+// have to wait for Devtron to notice before this one will look.
+func (s *Server) probeCluster(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "clusterId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cluster_id", err.Error())
+		return
+	}
+	measured, err := s.Caps.ProbeOne(r.Context(), id)
+	if err != nil {
+		writeDevtronError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, measured)
 }
 
 func (s *Server) sweepProgress(w http.ResponseWriter, _ *http.Request) {

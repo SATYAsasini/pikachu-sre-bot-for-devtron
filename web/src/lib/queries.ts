@@ -242,6 +242,15 @@ export function useRefreshClusters() {
   })
 }
 
+/** Measure one cluster on demand, overruling Devtron's cached verdict. */
+export function useProbeCluster() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.probeCluster,
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.clusters }),
+  })
+}
+
 /**
  * How far the sweep has got.
  *

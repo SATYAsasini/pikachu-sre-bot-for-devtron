@@ -148,6 +148,9 @@ type fakeDevtron struct {
 	// listCalls counts resource-list calls, which is how single-flight is
 	// observed.
 	listCalls int
+	// kindCalls counts the capability probe's kind-specific reads, which is
+	// how "one request per cluster" is asserted.
+	kindCalls int
 }
 
 // fakeOpts configures the orchestrator's behaviour.
@@ -182,9 +185,20 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/orchestrator/k8s/resource/list", func(w http.ResponseWriter, r *http.Request) {
+		// Read and count before any stall, so a fake that deliberately never
+		// answers still records that it was asked.
+		kindTarget := [2]string{}
+		if o.ListKinds != nil {
+			k, ns := listTarget(r)
+			kindTarget = [2]string{k, ns}
+		}
 		f.mu.Lock()
 		f.listCalls++
+		if o.ListKinds != nil {
+			f.kindCalls++
+		}
 		f.mu.Unlock()
+
 		if o.ListDelay > 0 {
 			select {
 			case <-time.After(o.ListDelay):
@@ -201,7 +215,7 @@ func newFakeDevtron(o fakeOpts) (*fakeDevtron, *Client) {
 		// namespace. Discovery asks with a CEL filter and no kind, and wants
 		// Objects.
 		if o.ListKinds != nil {
-			kind, ns := listTarget(r)
+			kind, ns := kindTarget[0], kindTarget[1]
 			n := o.ListKinds[kind]
 			if ns != "" {
 				// A namespaced read only finds what that namespace holds.
@@ -307,6 +321,13 @@ func (f *fakeDevtron) probed(ns, name string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.probes[probeKey(ns, name)]
+}
+
+// kindProbes is how many kind-specific resource lists were served.
+func (f *fakeDevtron) kindProbes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.kindCalls
 }
 
 func (f *fakeDevtron) lists() int {
